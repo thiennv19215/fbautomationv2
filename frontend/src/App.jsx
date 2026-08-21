@@ -376,15 +376,35 @@ export default function App() {
             </div>
           </div>
           <div className="header-actions">
-            <div className="live-pill"><span />Live Sync</div>
+            <div className="live-pill">
+              <span className={data.extensions.some((x) => x.connected !== false) ? "" : "offline"} />
+              {data.extensions.filter((x) => x.connected !== false).length} Via Online
+            </div>
+
+            <button
+              className="secondary header-btn"
+              onClick={() => setModal({ type: "account" })}
+              title="Thêm Fanpage mới do Nick Via quản trị"
+            >
+              <Plus style={{ width: "15px", height: "15px" }} /> Thêm Fanpage
+            </button>
+
+            <button
+              className="primary header-btn"
+              onClick={() => setModal({ type: "job" })}
+              title="Tạo chiến dịch đăng Reel / Ảnh hàng loạt"
+            >
+              <Layers style={{ width: "15px", height: "15px" }} /> Tạo bài đăng
+            </button>
+
             <button
               className="icon-button refresh"
               onClick={() => load(true)}
-              title="Làm mới dữ liệu"
+              title="Làm mới dữ liệu toàn hệ thống"
             >
               <RefreshCw className={refreshing ? "spin" : ""} />
             </button>
-            <button className="avatar">AD</button>
+            <button className="avatar" title="Quản trị viên">AD</button>
           </div>
         </header>
 
@@ -815,6 +835,8 @@ function Overview({
 function Accounts({ accounts, extensions, extensionMap, jobs, setModal, notify, reload }) {
   const [search, setSearch] = useState("");
   const [statusTab, setStatusTab] = useState("all"); // 'all', 'online', 'offline', 'has_pages'
+  const [viewMode, setViewMode] = useState("list");
+  const [selectedPageIds, setSelectedPageIds] = useState([]);
   const [scanning, setScanning] = useState(null);
   const [scanningPages, setScanningPages] = useState(null);
   const [scanningAll, setScanningAll] = useState(false);
@@ -921,44 +943,6 @@ function Accounts({ accounts, extensions, extensionMap, jobs, setModal, notify, 
     }
   };
 
-  const scanAllPages = async (extId) => {
-    setScanningPages(extId);
-    try {
-      const res = await endpoints.scanPages(extId);
-      if (res && res.ok) {
-        notify(`Quét thành công: Tìm thấy ${res.totalFound} Fanpage (Thêm mới ${res.savedNew} Page)`);
-        reload();
-      } else {
-        notify(res.error || "Không thể quét danh sách Fanpage", "error");
-      }
-    } catch (err) {
-      notify(err.message || "Lỗi khi quét Fanpage", "error");
-    } finally {
-      setScanningPages(null);
-    }
-  };
-
-  const scanAllOnlineVias = async () => {
-    if (onlineVias.length === 0) {
-      notify("Không có Chrome Profile nào đang Online", "error");
-      return;
-    }
-    setScanningAll(true);
-    let totalFound = 0;
-    let totalNew = 0;
-    for (const g of onlineVias) {
-      try {
-        const res = await endpoints.scanPages(g.ext.id);
-        if (res && res.ok) {
-          totalFound += res.totalFound || 0;
-          totalNew += res.savedNew || 0;
-        }
-      } catch (_) {}
-    }
-    setScanningAll(false);
-    notify(`Hoàn tất quét toàn bộ: Tổng ${totalFound} Fanpage (${totalNew} Page mới được thêm)`);
-    reload();
-  };
 
   const togglePageSelect = (pageId) => {
     setSelectedPageIds((prev) =>
@@ -976,7 +960,15 @@ function Accounts({ accounts, extensions, extensionMap, jobs, setModal, notify, 
 
   const toggleAccountEnabled = async (acc) => {
     try {
-      await endpoints.updateAccount(acc.id, { ...acc, enabled: !acc.enabled });
+      await endpoints.updateAccount(acc.id, {
+        name: acc.name,
+        facebookId: acc.facebook_id,
+        extensionId: acc.extension_id,
+        accountType: acc.account_type || "page",
+        parentId: acc.parent_id || null,
+        notes: acc.notes || "",
+        enabled: !acc.enabled,
+      });
       notify(`Đã ${!acc.enabled ? "bật" : "tắt"} Fanpage: ${acc.name}`);
       reload();
     } catch (err) {
@@ -1012,18 +1004,6 @@ function Accounts({ accounts, extensions, extensionMap, jobs, setModal, notify, 
                 <UsersRound /> Nhóm theo Via ({viaGroups.length})
               </button>
             </div>
-
-            {onlineVias.length > 0 && (
-              <button
-                className="secondary"
-                onClick={scanAllOnlineVias}
-                disabled={scanningAll}
-                title="Tự động duyệt qua tất cả các Nick đang kết nối và quét sạch Fanpage"
-              >
-                <Sparkles className={scanningAll ? "spin" : ""} />
-                {scanningAll ? "Đang quét..." : "Quét Page tự động"}
-              </button>
-            )}
 
             <button
               className="secondary"
@@ -1597,23 +1577,6 @@ function ExtensionCard({ extension: e, childPages = [], setModal, notify, reload
     }
   };
 
-  const scanPages = async () => {
-    setScanning(true);
-    try {
-      const res = await endpoints.scanPages(e.id);
-      if (res && res.ok) {
-        notify(`Quét thành công: Tìm thấy ${res.totalFound} Fanpage (Thêm mới ${res.savedNew} Page)`);
-        reload();
-      } else {
-        notify(res.error || "Không thể quét danh sách Fanpage", "error");
-      }
-    } catch (err) {
-      notify(err.message || "Lỗi khi quét Fanpage", "error");
-    } finally {
-      setScanning(false);
-    }
-  };
-
   const copyId = (text, label = "ID") => {
     navigator.clipboard?.writeText(String(text));
     notify(`Đã sao chép ${label}: ${text}`);
@@ -1678,11 +1641,10 @@ function ExtensionCard({ extension: e, childPages = [], setModal, notify, reload
           <button
             type="button"
             className="text-button"
-            onClick={scanPages}
-            disabled={scanning}
+            onClick={() => setModal({ type: "account", defaultExtensionId: e.id })}
             style={{ fontSize: "11px" }}
           >
-            <Sparkles className={scanning ? "spin" : ""} /> {scanning ? "Đang quét..." : "Quét Page từ FB"}
+            <Plus /> Thêm Page
           </button>
         </div>
 

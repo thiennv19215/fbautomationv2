@@ -183,10 +183,6 @@ function connectToAgent() {
         await handleGetIdentity(msg);
         return;
       }
-      if (msg.method === 'scan_pages') {
-        await handleScanPages(msg);
-        return;
-      }
     } catch (e) {
       console.error('[FBBridge] Message error:', e);
     }
@@ -589,40 +585,6 @@ async function handleGetIdentity(msg) {
   }
 }
 
-// ─── scan_pages: scan all managed Fanpages in the Facebook account ──
-
-async function handleScanPages(msg) {
-  const { id } = msg;
-  const tab = await findFbTab();
-  if (!tab) {
-    sendToAgent({ id, status: 503, error: 'no_facebook_tab' });
-    return;
-  }
-  try {
-    const result = await chrome.tabs.sendMessage(tab.id, { type: 'scan_pages', id });
-    if (result && result.ok) {
-      sendToAgent({
-        id,
-        status: 200,
-        data: { pages: result.pages || [] },
-      });
-    } else {
-      sendToAgent({ id, status: 500, error: (result && result.error) || 'scan_failed', data: { pages: [] } });
-    }
-  } catch (e) {
-    const m = e?.message || '';
-    if (
-      m.includes('Receiving end does not exist') ||
-      m.includes('Could not establish connection') ||
-      m.includes('No tab with id')
-    ) {
-      sendToAgent({ id, status: 503, error: 'no_facebook_tab' });
-    } else {
-      sendToAgent({ id, status: 500, error: m || 'scan_failed', data: { pages: [] } });
-    }
-  }
-}
-
 // ─── Runtime messages from content scripts ──────────────────
 
 chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
@@ -672,18 +634,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
         sendToAgent({ id: msg.id, status: 200, data: { identityId: msg.identityId, identityName: msg.identityName } });
       } else {
         sendToAgent({ id: msg.id, status: 500, error: msg.error || 'switch_failed' });
-      }
-    }
-    reply?.({ ok: true });
-    return;
-  }
-
-  if (msg.type === 'scan_pages_result') {
-    if (msg.id) {
-      if (msg.ok) {
-        sendToAgent({ id: msg.id, status: 200, data: { pages: msg.pages || [] } });
-      } else {
-        sendToAgent({ id: msg.id, status: 500, error: msg.error || 'scan_failed', data: { pages: [] } });
       }
     }
     reply?.({ ok: true });

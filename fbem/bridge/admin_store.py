@@ -93,14 +93,21 @@ def get_row(table: str, item_id: str) -> dict | None:
 def save_account(data: dict, item_id: str | None = None) -> dict:
     now = int(time.time())
     item_id = item_id or str(uuid.uuid4())
+    name = str(data.get("name", "")).strip()
+    facebook_id = str(data.get("facebookId") or data.get("facebook_id") or "").strip()
+    extension_id = str(data.get("extensionId") or data.get("extension_id") or "").strip()
+    account_type = str(data.get("accountType") or data.get("account_type") or "page").strip()
+    parent_id = data.get("parentId") or data.get("parent_id")
+    notes = str(data.get("notes") or "")
+    enabled = int(data.get("enabled", True))
+
     with _connect() as db:
         existing = db.execute("SELECT created_at FROM accounts WHERE id=?", (item_id,)).fetchone()
         db.execute("""INSERT OR REPLACE INTO accounts
           (id,name,facebook_id,extension_id,enabled,account_type,parent_id,notes,created_at,updated_at)
           VALUES(?,?,?,?,?,?,?,?,?,?)""",
-          (item_id, data["name"].strip(), str(data["facebookId"]).strip(),
-           str(data["extensionId"]).strip(), int(data.get("enabled", True)),
-           data.get("accountType", "page"), data.get("parentId"), data.get("notes", ""),
+          (item_id, name, facebook_id, extension_id, enabled,
+           account_type, parent_id, notes,
            existing[0] if existing else now, now))
     return get_row("accounts", item_id) or {}
 

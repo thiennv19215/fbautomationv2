@@ -106,12 +106,24 @@ def list_extensions() -> dict:
 
 class AccountBody(BaseModel):
     name: str
-    facebookId: str
-    extensionId: str
-    accountType: str = "page"  # 'profile' | 'page'
+    facebookId: str | None = None
+    facebook_id: str | None = None
+    extensionId: str | None = None
+    extension_id: str | None = None
+    accountType: str | None = "page"  # 'profile' | 'page'
+    account_type: str | None = None
     parentId: str | None = None
+    parent_id: str | None = None
     notes: str = ""
     enabled: bool = True
+
+    @property
+    def clean_facebook_id(self) -> str:
+        return (self.facebookId or self.facebook_id or "").strip()
+
+    @property
+    def clean_extension_id(self) -> str:
+        return (self.extensionId or self.extension_id or "").strip()
 
 
 class ScriptBody(BaseModel):
@@ -148,7 +160,7 @@ def list_accounts() -> dict:
 
 @app.post("/api/accounts")
 def create_account(body: AccountBody) -> dict:
-    if not body.name.strip() or not body.facebookId.strip() or not body.extensionId.strip():
+    if not body.name.strip() or not body.clean_facebook_id or not body.clean_extension_id:
         raise HTTPException(status_code=400, detail="name, facebookId and extensionId are required")
     return admin_store.save_account(body.model_dump())
 
