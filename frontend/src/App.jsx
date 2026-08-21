@@ -10,8 +10,8 @@ import { endpoints } from "./api";
 
 const NAV = [
   ["overview", "Tổng quan", LayoutDashboard],
-  ["accounts", "Tài khoản", UsersRound],
-  ["extensions", "Extension", MonitorDot],
+  ["accounts", "Quản lý Fanpage", Flag],
+  ["extensions", "Chrome Profile", MonitorDot],
   ["media", "Thư viện Video", FolderTree],
   ["scripts", "Thư viện kịch bản", BookOpen],
   ["jobs", "Hàng đợi & Tiến độ", History],
@@ -19,8 +19,8 @@ const NAV = [
 
 const TITLES = {
   overview: ["Tổng quan", "Theo dõi toàn bộ hệ thống xuất bản và tiến độ thời gian thực"],
-  accounts: ["Quản lý tài khoản", "Gắn từng tài khoản với đúng Chrome Profile"],
-  extensions: ["Extension", "Theo dõi các phiên trình duyệt đang kết nối"],
+  accounts: ["Quản lý Fanpage", "Danh sách toàn bộ Fanpage, liên kết Nick Via và tạo bài đăng hàng loạt"],
+  extensions: ["Chrome Profile & Via", "Theo dõi và đồng bộ các phiên trình duyệt Facebook đang kết nối"],
   media: ["Thư viện Video & Media", "Tạo thư mục, tải lên file và phân loại video Reel cho từng dàn Fanpage"],
   scripts: ["Thư viện kịch bản", "Tạo nội dung một lần, vận hành trên nhiều tài khoản"],
   jobs: ["Hàng đợi & Tiến độ", "Kiểm soát chi tiết tiến độ thực thi từng bước và kết quả"],
@@ -819,46 +819,71 @@ function Accounts({ accounts, extensions, extensionMap, jobs, setModal, notify, 
   const [scanningPages, setScanningPages] = useState(null);
   const [scanningAll, setScanningAll] = useState(false);
 
+  // Group accounts by extension ID
   const viaGroups = useMemo(() => {
-    const extList = [...extensions];
-    const accountedExtIds = new Set(extList.map((e) => e.id));
-    const orphanedAccounts = accounts.filter((a) => !accountedExtIds.has(a.extension_id));
+    const map = {};
+    for (const ext of extensions) {
+      map[ext.id] = { ext, isOnline: ext.connected !== false, pages: [] };
+    }
+    for (const acc of accounts) {
+      const extId = acc.extension_id || "legacy";
+      if (!map[extId]) {
+        map[extId] = {
+          ext: extensionMap[extId] || { id: extId, fbUser: null, connected: false },
+          isOnline: false,
+          pages: [],
+        };
+      }
+      map[extId].pages.push(acc);
+    }
+    return Object.values(map);
+  }, [accounts, extensions, extensionMap]);
 
-    const groups = extList.map((ext) => {
-      const childPages = accounts.filter((a) => a.extension_id === ext.id);
+  // Master flat pages list with computed meta
+  const masterPages = useMemo(() => {
+    return accounts.map((acc) => {
+      const ext = extensionMap[acc.extension_id] || { id: acc.extension_id || "legacy", connected: false };
+      const isOnline = ext.connected !== false && Boolean(ext.id);
+      const activeJobs = jobs.filter(
+        (j) => j.account_id === acc.id && ["queued", "running", "waiting_connection"].includes(j.status)
+      );
       return {
+        ...acc,
         ext,
-        isOnline: true,
-        pages: childPages,
+        isOnline,
+        activeJobs,
       };
     });
+  }, [accounts, extensionMap, jobs]);
 
-    if (orphanedAccounts.length > 0) {
-      const orphanedByExt = {};
-      orphanedAccounts.forEach((a) => {
-        if (!orphanedByExt[a.extension_id]) orphanedByExt[a.extension_id] = [];
-        orphanedByExt[a.extension_id].push(a);
-      });
-      Object.entries(orphanedByExt).forEach(([extId, pages]) => {
-        groups.push({
-          ext: { id: extId, fbUser: null },
-          isOnline: false,
-          pages,
-        });
-      });
-    }
+  // Filtered flat pages
+  const filteredPages = useMemo(() => {
+    return masterPages.filter((p) => {
+      if (statusTab === "online" && !p.isOnline) return false;
+      if (statusTab === "offline" && p.isOnline) return false;
+      if (statusTab === "enabled" && !p.enabled) return false;
+      if (statusTab === "disabled" && p.enabled) return false;
 
-    return groups;
-  }, [accounts, extensions]);
+      if (!search.trim()) return true;
+      const q = search.toLowerCase().trim();
+      return (
+        (p.name || "").toLowerCase().includes(q) ||
+        String(p.facebook_id || "").toLowerCase().includes(q) ||
+        (p.notes || "").toLowerCase().includes(q) ||
+        (p.ext.fbUser?.name || "").toLowerCase().includes(q) ||
+        String(p.ext.fbUser?.id || "").toLowerCase().includes(q) ||
+        (p.ext.id || "").toLowerCase().includes(q)
+      );
+    });
+  }, [masterPages, search, statusTab]);
 
+  // Filtered groups
   const filteredGroups = useMemo(() => {
     return viaGroups.filter((g) => {
-      // Status filter
       if (statusTab === "online" && !g.isOnline) return false;
       if (statusTab === "offline" && g.isOnline) return false;
       if (statusTab === "has_pages" && g.pages.length === 0) return false;
 
-      // Search filter
       if (!search.trim()) return true;
       const q = search.toLowerCase().trim();
       const viaName = (g.ext.fbUser?.name || "").toLowerCase();
@@ -867,7 +892,6 @@ function Accounts({ accounts, extensions, extensionMap, jobs, setModal, notify, 
 
       if (viaName.includes(q) || viaUid.includes(q) || extId.includes(q)) return true;
 
-      // Check if any child page matches
       return g.pages.some(
         (p) =>
           (p.name || "").toLowerCase().includes(q) ||
@@ -936,6 +960,30 @@ function Accounts({ accounts, extensions, extensionMap, jobs, setModal, notify, 
     reload();
   };
 
+  const togglePageSelect = (pageId) => {
+    setSelectedPageIds((prev) =>
+      prev.includes(pageId) ? prev.filter((id) => id !== pageId) : [...prev, pageId]
+    );
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedPageIds.length === filteredPages.length) {
+      setSelectedPageIds([]);
+    } else {
+      setSelectedPageIds(filteredPages.map((p) => p.id));
+    }
+  };
+
+  const toggleAccountEnabled = async (acc) => {
+    try {
+      await endpoints.updateAccount(acc.id, { ...acc, enabled: !acc.enabled });
+      notify(`Đã ${!acc.enabled ? "bật" : "tắt"} Fanpage: ${acc.name}`);
+      reload();
+    } catch (err) {
+      notify(err.message, "error");
+    }
+  };
+
   const copyId = (id, label = "ID") => {
     navigator.clipboard?.writeText(String(id));
     notify(`Đã sao chép ${label}: ${id}`);
@@ -944,10 +992,27 @@ function Accounts({ accounts, extensions, extensionMap, jobs, setModal, notify, 
   return (
     <>
       <PageToolbar
-        title="Quản lý Nick Via & Dàn Fanpage"
-        subtitle="Quản lý tập trung các Profile Chrome, tự động đồng bộ danh tính và điều phối xuất bản đa kênh."
+        title="Quản lý Danh sách Fanpage & Nick Via"
+        subtitle="Danh sách toàn bộ các Fanpage được quản lý, phân loại theo Nick Via và điều phối xuất bản tự động."
         action={
-          <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", alignItems: "center" }}>
+            <div className="view-mode-toggle">
+              <button
+                type="button"
+                className={`view-mode-btn ${viewMode === "list" ? "active" : ""}`}
+                onClick={() => setViewMode("list")}
+              >
+                <Flag /> Danh sách Page ({totalPagesCount})
+              </button>
+              <button
+                type="button"
+                className={`view-mode-btn ${viewMode === "grouped" ? "active" : ""}`}
+                onClick={() => setViewMode("grouped")}
+              >
+                <UsersRound /> Nhóm theo Via ({viaGroups.length})
+              </button>
+            </div>
+
             {onlineVias.length > 0 && (
               <button
                 className="secondary"
@@ -956,16 +1021,18 @@ function Accounts({ accounts, extensions, extensionMap, jobs, setModal, notify, 
                 title="Tự động duyệt qua tất cả các Nick đang kết nối và quét sạch Fanpage"
               >
                 <Sparkles className={scanningAll ? "spin" : ""} />
-                {scanningAll ? "Đang quét toàn bộ..." : "Quét tất cả Nick Online"}
+                {scanningAll ? "Đang quét..." : "Quét Page tự động"}
               </button>
             )}
+
             <button
               className="secondary"
-              onClick={() => setModal({ type: "job" })}
-              title="Đăng bài hoặc video hàng loạt cho nhiều Fanpage cùng lúc"
+              onClick={() => setModal({ type: "job", initialAccountIds: selectedPageIds.length > 0 ? selectedPageIds : undefined })}
+              title="Đăng bài cho các Fanpage"
             >
               <Layers /> Đăng hàng loạt
             </button>
+
             <button className="primary" onClick={() => setModal({ type: "account" })}>
               <Plus /> Thêm Fanpage
             </button>
@@ -977,11 +1044,11 @@ function Accounts({ accounts, extensions, extensionMap, jobs, setModal, notify, 
       <div className="metrics-grid">
         <div className="metric-card">
           <div className="metric-icon" style={{ background: "#eff6ff", color: "#2563eb" }}>
-            <UsersRound />
+            <Flag />
           </div>
           <div>
-            <span>Tổng Nick Via / Profiles</span>
-            <b>{viaGroups.length}</b>
+            <span>Tổng số Fanpage</span>
+            <b style={{ color: "#2563eb" }}>{totalPagesCount}</b>
           </div>
         </div>
 
@@ -990,18 +1057,18 @@ function Accounts({ accounts, extensions, extensionMap, jobs, setModal, notify, 
             <MonitorDot />
           </div>
           <div>
-            <span>Nick đang Online</span>
-            <b style={{ color: "#059669" }}>{onlineVias.length}</b>
+            <span>Nick Via đang Online</span>
+            <b style={{ color: "#059669" }}>{onlineVias.length}/{viaGroups.length}</b>
           </div>
         </div>
 
         <div className="metric-card">
           <div className="metric-icon" style={{ background: "#f5f3ff", color: "#7c3aed" }}>
-            <Flag />
+            <CheckCircle2 />
           </div>
           <div>
-            <span>Tổng số Fanpage</span>
-            <b>{totalPagesCount}</b>
+            <span>Page Đang Hoạt động</span>
+            <b style={{ color: "#7c3aed" }}>{accounts.filter((a) => a.enabled).length}</b>
           </div>
         </div>
 
@@ -1023,7 +1090,7 @@ function Accounts({ accounts, extensions, extensionMap, jobs, setModal, notify, 
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Tìm theo tên Nick Via, UID, tên Fanpage hoặc Page ID..."
+            placeholder="Tìm theo tên Fanpage, Page ID, tên Nick Via hoặc UID..."
           />
           {search && (
             <button className="clear-search" onClick={() => setSearch("")}>
@@ -1037,237 +1104,436 @@ function Accounts({ accounts, extensions, extensionMap, jobs, setModal, notify, 
             className={`chip ${statusTab === "all" ? "active" : ""}`}
             onClick={() => setStatusTab("all")}
           >
-            Tất cả ({viaGroups.length})
+            Tất cả ({totalPagesCount})
           </button>
           <button
             className={`chip ${statusTab === "online" ? "active" : ""}`}
             onClick={() => setStatusTab("online")}
           >
-            🟢 Online ({onlineVias.length})
+            🟢 Via Online ({masterPages.filter((p) => p.isOnline).length})
           </button>
           <button
-            className={`chip ${statusTab === "offline" ? "active" : ""}`}
-            onClick={() => setStatusTab("offline")}
+            className={`chip ${statusTab === "enabled" ? "active" : ""}`}
+            onClick={() => setStatusTab("enabled")}
           >
-            Offline ({viaGroups.length - onlineVias.length})
+            Đang bật ({masterPages.filter((p) => p.enabled).length})
           </button>
           <button
-            className={`chip ${statusTab === "has_pages" ? "active" : ""}`}
-            onClick={() => setStatusTab("has_pages")}
+            className={`chip ${statusTab === "disabled" ? "active" : ""}`}
+            onClick={() => setStatusTab("disabled")}
           >
-            Đang có Page ({viaGroups.filter((g) => g.pages.length > 0).length})
+            Đã tạm dừng ({masterPages.filter((p) => !p.enabled).length})
           </button>
         </div>
       </div>
 
-      {filteredGroups.length ? (
-        <div className="via-groups">
-          {filteredGroups.map((group) => {
-            const ext = group.ext;
-            const viaName =
-              ext.fbUser?.name ||
-              (ext.id === "legacy" ? "Chrome Profile (Chưa reload)" : `Nick Via · ${ext.id.slice(0, 8)}`);
-            const viaUid = ext.fbUser?.id || "Chưa đồng bộ UID";
-            const isOnline = group.isOnline;
+      {/* Bulk Action Floating Bar */}
+      {selectedPageIds.length > 0 && (
+        <div className="bulk-action-bar">
+          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            <b>Đã chọn {selectedPageIds.length} Fanpage</b>
+            <button
+              type="button"
+              className="text-button"
+              style={{ color: "#93c5fd" }}
+              onClick={() => setSelectedPageIds([])}
+            >
+              Bỏ chọn tất cả
+            </button>
+          </div>
+          <button
+            type="button"
+            className="primary compact"
+            onClick={() => setModal({ type: "job", initialAccountIds: selectedPageIds })}
+          >
+            <Plus /> Đăng bài cho {selectedPageIds.length} Page đã chọn
+          </button>
+        </div>
+      )}
 
-            return (
-              <article className="via-card" key={ext.id}>
-                <div className="via-header">
-                  <div className="via-info">
-                    <div className="via-avatar">
-                      <User />
-                    </div>
-                    <div className="via-titles">
-                      <h3>
-                        {viaName}
-                        <Badge status={isOnline ? (ext.busy ? "running" : "online") : "offline"} />
-                      </h3>
-                      <p>
-                        UID:{" "}
-                        <b
-                          className="clickable-id"
-                          onClick={() => viaUid !== "Chưa đồng bộ UID" && copyId(viaUid, "UID")}
-                          title="Bấm để sao chép UID"
-                        >
-                          {viaUid}
-                        </b>{" "}
-                        · Chrome Profile:{" "}
-                        <code
-                          className="clickable-id"
-                          onClick={() => copyId(ext.id, "Profile ID")}
-                          title="Bấm để sao chép Profile ID"
-                        >
-                          {ext.id.slice(0, 16)}...
-                        </code>{" "}
-                        · Đang cầm <b>{group.pages.length} Fanpage</b>
-                      </p>
-                    </div>
-                  </div>
+      {/* View Mode 1: Master Page Table List */}
+      {viewMode === "list" && (
+        <>
+          {filteredPages.length ? (
+            <div className="master-table-card">
+              <table className="master-table">
+                <thead>
+                  <tr>
+                    <th style={{ width: "40px" }}>
+                      <input
+                        type="checkbox"
+                        checked={filteredPages.length > 0 && selectedPageIds.length === filteredPages.length}
+                        onChange={toggleSelectAll}
+                        title="Chọn tất cả"
+                      />
+                    </th>
+                    <th>Fanpage</th>
+                    <th>Facebook Page ID</th>
+                    <th>Nick Via Quản trị</th>
+                    <th>Trạng thái</th>
+                    <th>Hàng đợi</th>
+                    <th style={{ textAlign: "right" }}>Thao tác</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredPages.map((a) => {
+                    const isSelected = selectedPageIds.includes(a.id);
+                    const viaName =
+                      a.ext.fbUser?.name ||
+                      (a.ext.id === "legacy" ? "Chrome Profile (Chưa reload)" : `Nick Via · ${a.ext.id.slice(0, 8)}`);
 
-                  <div className="via-actions">
-                    {isOnline && (
-                      <>
-                        <button
-                          className="secondary compact"
-                          onClick={() => scanAllPages(ext.id)}
-                          disabled={scanningPages === ext.id}
-                          title="Tự động quét toàn bộ các Fanpage do Nick này quản lý và lưu vào hệ thống"
-                        >
-                          <Sparkles className={scanningPages === ext.id ? "spin" : ""} />
-                          {scanningPages === ext.id ? "Đang quét..." : "Quét Page"}
-                        </button>
-                        {group.pages.length > 0 && (
-                          <button
-                            className="secondary compact"
-                            onClick={() =>
-                              setModal({
-                                type: "job",
-                                initialAccountIds: group.pages.map((p) => p.id),
-                              })
-                            }
-                            title="Đăng bài cho toàn bộ Fanpage của Nick này"
-                          >
-                            <Layers /> Đăng cả nhóm ({group.pages.length})
-                          </button>
-                        )}
-                        <button
-                          className="secondary compact"
-                          onClick={() => scanIdentity(ext.id)}
-                          disabled={scanning === ext.id}
-                          title="Quét tên và ID đang mở trên Facebook tab"
-                        >
-                          <RefreshCw className={scanning === ext.id ? "spin" : ""} />
-                          Quét Tab
-                        </button>
-                      </>
-                    )}
-                    <button
-                      className="primary compact"
-                      onClick={() => setModal({ type: "account", defaultExtensionId: ext.id })}
-                      title="Thêm Fanpage thủ công cho nick này"
-                    >
-                      <Plus /> Thêm thủ công
-                    </button>
-                  </div>
-                </div>
-
-                <div className="pages-container">
-                  {group.pages.length ? (
-                    <div className="pages-grid">
-                      {group.pages.map((a) => {
-                        const active = jobs.filter(
-                          (j) =>
-                            j.account_id === a.id &&
-                            ["queued", "running", "waiting_connection"].includes(j.status)
-                        );
-                        return (
-                          <div className="page-item-card" key={a.id}>
-                            <div className="page-item-info">
-                              <div className="page-icon-badge">
-                                <Flag />
-                              </div>
-                              <div className="page-text">
-                                <b>{a.name}</b>
-                                <span>
-                                  ID:{" "}
-                                  <code
-                                    className="clickable-id"
-                                    onClick={() => copyId(a.facebook_id, "Page ID")}
-                                    title="Bấm để sao chép Page ID"
-                                  >
-                                    {a.facebook_id}
-                                  </code>
-                                  {a.notes ? ` · ${a.notes}` : ""}
-                                </span>
-                                <small
-                                  style={{
-                                    color: active.length > 0 ? "var(--blue)" : "var(--muted)",
-                                    fontSize: "9px",
-                                    fontWeight: 700,
-                                  }}
-                                >
-                                  {active.length > 0 ? `⏳ ${active.length} tác vụ chờ` : "✓ Sẵn sàng"}
-                                </small>
-                              </div>
+                    return (
+                      <tr key={a.id} className={isSelected ? "selected" : ""}>
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => togglePageSelect(a.id)}
+                          />
+                        </td>
+                        <td>
+                          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                            <div className="page-icon-badge">
+                              <Flag />
                             </div>
-
-                            <div className="page-item-actions">
-                              <button
-                                className="icon-button"
-                                title="Chỉnh sửa Fanpage"
-                                onClick={() => setModal({ type: "account", account: a })}
-                              >
-                                <Pencil />
-                              </button>
-                              <button
-                                className="icon-button danger"
-                                title="Xóa Fanpage"
-                                onClick={() =>
-                                  setModal({
-                                    type: "confirm",
-                                    title: "Xóa Fanpage?",
-                                    text: `Fanpage "${a.name}" sẽ bị xóa khỏi dashboard. Lịch sử job vẫn được giữ lại.`,
-                                    label: "Xóa Fanpage",
-                                    success: "Đã xóa Fanpage",
-                                    action: () => endpoints.deleteAccount(a.id),
-                                  })
-                                }
-                              >
-                                <Trash2 />
-                              </button>
-                              <button
-                                className="primary compact"
-                                disabled={!a.enabled || !isOnline}
-                                onClick={() => setModal({ type: "job", accountId: a.id })}
-                                title="Tạo tác vụ đăng bài cho Page này"
-                              >
-                                <Plus /> Đăng ngay
-                              </button>
+                            <div>
+                              <b style={{ fontSize: "14px", color: "#0f172a", display: "block" }}>{a.name}</b>
+                              {a.notes ? (
+                                <span style={{ fontSize: "11px", color: "var(--muted)" }}>🏷️ {a.notes}</span>
+                              ) : (
+                                <span style={{ fontSize: "11px", color: "var(--muted)" }}>Fanpage Facebook</span>
+                              )}
                             </div>
                           </div>
-                        );
-                      })}
-                    </div>
+                        </td>
+                        <td>
+                          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                            <code
+                              className="clickable-id"
+                              onClick={() => copyId(a.facebook_id, "Page ID")}
+                              title="Bấm để sao chép Page ID"
+                            >
+                              {a.facebook_id}
+                            </code>
+                            <a
+                              href={`https://facebook.com/${a.facebook_id}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="icon-button"
+                              title="Mở Fanpage trên Facebook"
+                              style={{ width: "24px", height: "24px" }}
+                            >
+                              <ExternalLink style={{ width: "13px", height: "13px" }} />
+                            </a>
+                          </div>
+                        </td>
+                        <td>
+                          <div>
+                            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                              <span style={{ fontWeight: "700", color: "#1e293b" }}>{viaName}</span>
+                              <Badge status={a.isOnline ? "online" : "offline"} />
+                            </div>
+                            {a.ext.fbUser?.id && (
+                              <span style={{ fontSize: "11px", color: "var(--muted)" }}>
+                                UID: {a.ext.fbUser.id}
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td>
+                          <label className="read-only" style={{ cursor: "pointer" }}>
+                            <input
+                              type="checkbox"
+                              checked={a.enabled}
+                              onChange={() => toggleAccountEnabled(a)}
+                            />
+                            <span style={{ fontSize: "12px", fontWeight: "600", color: a.enabled ? "#059669" : "#64748b" }}>
+                              {a.enabled ? "Đang bật" : "Tạm dừng"}
+                            </span>
+                          </label>
+                        </td>
+                        <td>
+                          {a.activeJobs.length > 0 ? (
+                            <span style={{ color: "var(--blue)", fontWeight: "700", fontSize: "11px" }}>
+                              ⏳ {a.activeJobs.length} tác vụ
+                            </span>
+                          ) : (
+                            <span style={{ color: "var(--muted)", fontSize: "11px" }}>✓ Sẵn sàng</span>
+                          )}
+                        </td>
+                        <td style={{ textAlign: "right" }}>
+                          <div style={{ display: "inline-flex", gap: "6px" }}>
+                            <button
+                              className="primary compact"
+                              disabled={!a.enabled || !a.isOnline}
+                              onClick={() => setModal({ type: "job", accountId: a.id })}
+                              title="Tạo bài đăng ngay cho Page này"
+                            >
+                              <Plus /> Đăng ngay
+                            </button>
+                            <button
+                              className="icon-button"
+                              title="Chỉnh sửa Fanpage"
+                              onClick={() => setModal({ type: "account", account: a })}
+                            >
+                              <Pencil />
+                            </button>
+                            <button
+                              className="icon-button danger"
+                              title="Xóa Fanpage"
+                              onClick={() =>
+                                setModal({
+                                  type: "confirm",
+                                  title: "Xóa Fanpage?",
+                                  text: `Fanpage "${a.name}" sẽ bị xóa khỏi dashboard. Lịch sử job vẫn được giữ lại.`,
+                                  label: "Xóa Fanpage",
+                                  success: "Đã xóa Fanpage",
+                                  action: () => endpoints.deleteAccount(a.id),
+                                })
+                              }
+                            >
+                              <Trash2 />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="panel">
+              <Empty
+                icon={Flag}
+                title={search ? "Không tìm thấy Fanpage phù hợp" : "Chưa có Fanpage nào trong danh sách"}
+                text={
+                  search
+                    ? "Thử tìm kiếm với từ khóa khác hoặc xóa bộ lọc."
+                    : "Bấm 'Quét Page tự động' để hệ thống tự động tìm và nạp danh sách Fanpage từ tài khoản Facebook đang mở."
+                }
+                action={
+                  search ? (
+                    <button className="secondary" onClick={() => { setSearch(""); setStatusTab("all"); }}>
+                      Xóa bộ lọc
+                    </button>
                   ) : (
-                    <div
-                      style={{
-                        textAlign: "center",
-                        padding: "16px",
-                        color: "var(--muted)",
-                        fontSize: "12px",
-                      }}
-                    >
-                      Nick này chưa có Fanpage nào. Bấm <b>"Quét Page"</b> để tự động lấy từ Facebook hoặc <b>"Thêm thủ công"</b>.
+                    <div style={{ display: "flex", gap: "8px" }}>
+                      {onlineVias.length > 0 && (
+                        <button className="primary" onClick={scanAllOnlineVias} disabled={scanningAll}>
+                          <Sparkles className={scanningAll ? "spin" : ""} /> Quét Page từ Nick FB
+                        </button>
+                      )}
+                      <button className="secondary" onClick={() => setModal({ type: "account" })}>
+                        <Plus /> Thêm thủ công
+                      </button>
                     </div>
-                  )}
-                </div>
-              </article>
-            );
-          })}
-        </div>
-      ) : (
-        <div className="panel">
-          <Empty
-            icon={UsersRound}
-            title={search ? "Không tìm thấy kết quả phù hợp" : "Bắt đầu với Nick Facebook & Fanpage đầu tiên"}
-            text={
-              search
-                ? "Thử tìm kiếm với từ khóa khác hoặc xóa bộ lọc."
-                : "Hệ thống tự động phát hiện Chrome Profile có gắn extension và tab Facebook đang mở."
-            }
-            action={
-              search ? (
-                <button className="secondary" onClick={() => { setSearch(""); setStatusTab("all"); }}>
-                  Xóa bộ lọc
-                </button>
-              ) : (
-                <button className="primary" onClick={() => setModal({ type: "account" })}>
-                  <Plus /> Thêm Fanpage
-                </button>
-              )
-            }
-          />
-        </div>
+                  )
+                }
+              />
+            </div>
+          )}
+        </>
+      )}
+
+      {/* View Mode 2: Hierarchical Groups by Via */}
+      {viewMode === "grouped" && (
+        <>
+          {filteredGroups.length ? (
+            <div className="via-groups">
+              {filteredGroups.map((group) => {
+                const ext = group.ext;
+                const viaName =
+                  ext.fbUser?.name ||
+                  (ext.id === "legacy" ? "Chrome Profile (Chưa reload)" : `Nick Via · ${ext.id.slice(0, 8)}`);
+                const viaUid = ext.fbUser?.id || "Chưa đồng bộ UID";
+                const isOnline = group.isOnline;
+
+                return (
+                  <article className="via-card" key={ext.id}>
+                    <div className="via-header">
+                      <div className="via-info">
+                        <div className="via-avatar">
+                          <User />
+                        </div>
+                        <div className="via-titles">
+                          <h3>
+                            {viaName}
+                            <Badge status={isOnline ? (ext.busy ? "running" : "online") : "offline"} />
+                          </h3>
+                          <p>
+                            UID:{" "}
+                            <b
+                              className="clickable-id"
+                              onClick={() => viaUid !== "Chưa đồng bộ UID" && copyId(viaUid, "UID")}
+                              title="Bấm để sao chép UID"
+                            >
+                              {viaUid}
+                            </b>{" "}
+                            · Chrome Profile:{" "}
+                            <code
+                              className="clickable-id"
+                              onClick={() => copyId(ext.id, "Profile ID")}
+                              title="Bấm để sao chép Profile ID"
+                            >
+                              {ext.id.slice(0, 16)}...
+                            </code>{" "}
+                            · Đang cầm <b>{group.pages.length} Fanpage</b>
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="via-actions">
+                        {isOnline && (
+                          <>
+                            <button
+                              className="secondary compact"
+                              onClick={() => scanAllPages(ext.id)}
+                              disabled={scanningPages === ext.id}
+                              title="Tự động quét toàn bộ các Fanpage do Nick này quản lý"
+                            >
+                              <Sparkles className={scanningPages === ext.id ? "spin" : ""} />
+                              {scanningPages === ext.id ? "Đang quét..." : "Quét Page"}
+                            </button>
+                            {group.pages.length > 0 && (
+                              <button
+                                className="secondary compact"
+                                onClick={() =>
+                                  setModal({
+                                    type: "job",
+                                    initialAccountIds: group.pages.map((p) => p.id),
+                                  })
+                                }
+                                title="Đăng bài cho toàn bộ Fanpage của Nick này"
+                              >
+                                <Layers /> Đăng cả nhóm ({group.pages.length})
+                              </button>
+                            )}
+                            <button
+                              className="secondary compact"
+                              onClick={() => scanIdentity(ext.id)}
+                              disabled={scanning === ext.id}
+                              title="Quét tên và ID đang mở trên Facebook tab"
+                            >
+                              <RefreshCw className={scanning === ext.id ? "spin" : ""} />
+                              Quét Tab
+                            </button>
+                          </>
+                        )}
+                        <button
+                          className="primary compact"
+                          onClick={() => setModal({ type: "account", defaultExtensionId: ext.id })}
+                          title="Thêm Fanpage thủ công cho nick này"
+                        >
+                          <Plus /> Thêm thủ công
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="pages-container">
+                      {group.pages.length ? (
+                        <div className="pages-grid">
+                          {group.pages.map((a) => {
+                            const active = jobs.filter(
+                              (j) =>
+                                j.account_id === a.id &&
+                                ["queued", "running", "waiting_connection"].includes(j.status)
+                            );
+                            return (
+                              <div className="page-item-card" key={a.id}>
+                                <div className="page-item-info">
+                                  <div className="page-icon-badge">
+                                    <Flag />
+                                  </div>
+                                  <div className="page-text">
+                                    <b>{a.name}</b>
+                                    <span>
+                                      ID:{" "}
+                                      <code
+                                        className="clickable-id"
+                                        onClick={() => copyId(a.facebook_id, "Page ID")}
+                                        title="Bấm để sao chép Page ID"
+                                      >
+                                        {a.facebook_id}
+                                      </code>
+                                      {a.notes ? ` · ${a.notes}` : ""}
+                                    </span>
+                                    <small
+                                      style={{
+                                        color: active.length > 0 ? "var(--blue)" : "var(--muted)",
+                                        fontSize: "9px",
+                                        fontWeight: 700,
+                                      }}
+                                    >
+                                      {active.length > 0 ? `⏳ ${active.length} tác vụ chờ` : "✓ Sẵn sàng"}
+                                    </small>
+                                  </div>
+                                </div>
+
+                                <div className="page-item-actions">
+                                  <button
+                                    className="icon-button"
+                                    title="Chỉnh sửa Fanpage"
+                                    onClick={() => setModal({ type: "account", account: a })}
+                                  >
+                                    <Pencil />
+                                  </button>
+                                  <button
+                                    className="icon-button danger"
+                                    title="Xóa Fanpage"
+                                    onClick={() =>
+                                      setModal({
+                                        type: "confirm",
+                                        title: "Xóa Fanpage?",
+                                        text: `Fanpage "${a.name}" sẽ bị xóa khỏi dashboard. Lịch sử job vẫn được giữ lại.`,
+                                        label: "Xóa Fanpage",
+                                        success: "Đã xóa Fanpage",
+                                        action: () => endpoints.deleteAccount(a.id),
+                                      })
+                                    }
+                                  >
+                                    <Trash2 />
+                                  </button>
+                                  <button
+                                    className="primary compact"
+                                    disabled={!a.enabled || !isOnline}
+                                    onClick={() => setModal({ type: "job", accountId: a.id })}
+                                    title="Tạo tác vụ đăng bài cho Page này"
+                                  >
+                                    <Plus /> Đăng ngay
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div
+                          style={{
+                            textAlign: "center",
+                            padding: "16px",
+                            color: "var(--muted)",
+                            fontSize: "12px",
+                          }}
+                        >
+                          Nick này chưa có Fanpage nào. Bấm <b>"Quét Page"</b> để tự động lấy từ Facebook hoặc <b>"Thêm thủ công"</b>.
+                        </div>
+                      )}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="panel">
+              <Empty
+                icon={UsersRound}
+                title={search ? "Không tìm thấy kết quả phù hợp" : "Chưa có Nick Via nào kết nối"}
+                text="Hệ thống tự động phát hiện Chrome Profile có gắn extension và tab Facebook đang mở."
+              />
+            </div>
+          )}
+        </>
       )}
     </>
   );
