@@ -1100,13 +1100,7 @@
     }
 
     if (data.type === 'get_identity') {
-      // Read the CURRENT acting identity (the page/profile this tab posts AS).
-      // When "using Facebook as a Page", the session cookie `i_user` holds the
-      // PAGE id (the actor), while `c_user` stays the personal account and
-      // CurrentUserInitialData.ACCOUNT_ID also stays personal. So the real per-page
-      // id is `i_user` when present; otherwise we're acting as the personal account.
-      // NAME is only reliable for the personal account — when acting as a Page the
-      // bootloader NAME stays personal, so we return name=null in that case.
+      // Read the CURRENT acting identity (page or personal profile) + Page Name
       const id = data.id;
       const readCookie = (k) => {
         const m = new RegExp('(?:^|;\\s*)' + k + '=([^;]+)').exec(document.cookie || '');
@@ -1118,24 +1112,58 @@
         const cUser = readCookie('c_user'); // the personal account id
         let identityId = iUser || null;
         let identityName = null;
+
+        // 1. Check CurrentUserInitialData
+        let cuId = null;
         try {
           const cu = window.require?.('CurrentUserInitialData');
           if (cu) {
-            const cuId = cu.ACCOUNT_ID || cu.USER_ID || null;
+            cuId = cu.ACCOUNT_ID || cu.USER_ID || null;
             if (!identityId) identityId = cuId;
-            // Only trust the bootloader NAME when it belongs to the acting id. When
-            // acting as a Page (i_user set), CurrentUserInitialData stays the
-            // PERSONAL account, so its NAME would mislabel the page → leave it null.
             if (identityId && cuId && String(identityId) === String(cuId)) {
               identityName = cu.NAME || cu.SHORT_NAME || null;
             }
           }
-        } catch (_) {
-          /* module not present on this surface — id-only is fine */
+        } catch (_) {}
+
+        // 2. Extract Page Name from DOM / meta tags / Document Title if acting as Page
+        if (!identityName || identityId !== cuId) {
+          try {
+            const ogTitle = document.querySelector('meta[property="og:title"]')?.content;
+            if (ogTitle && !ogTitle.toLowerCase().includes('facebook')) {
+              identityName = ogTitle.trim();
+            }
+            if (!identityName) {
+              const h1 = document.querySelector('[role="main"] h1, h1')?.innerText;
+              if (h1 && h1.trim()) identityName = h1.trim();
+            }
+            if (!identityName && document.title) {
+              const cleaned = document.title
+                .replace(/\(\d+\)\s*/g, '')
+                .replace(/\s*\|\s*Facebook.*/i, '')
+                .replace(/\s*-\s*Facebook.*/i, '')
+                .trim();
+              if (cleaned && cleaned.toLowerCase() !== 'facebook') {
+                identityName = cleaned;
+              }
+            }
+          } catch (_) {}
         }
+
+        // 3. If currently viewing a Fanpage URL, detect Page ID from meta
+        if (!iUser) {
+          try {
+            const metaAndroid = document.querySelector('meta[property="al:android:url"]')?.content || '';
+            const mPage = /fb:\/\/page\/(\d+)/i.exec(metaAndroid);
+            if (mPage && mPage[1]) {
+              identityId = mPage[1];
+            }
+          } catch (_) {}
+        }
+
         identityId = identityId || cUser || readTokens().__user || null;
         result = identityId
-          ? { ok: true, identityId: String(identityId), identityName }
+          ? { ok: true, identityId: String(identityId), identityName: identityName || `ID ${identityId}` }
           : { ok: false, error: 'no_identity' };
       } catch (e) {
         result = { ok: false, error: String(e?.message || e) };
