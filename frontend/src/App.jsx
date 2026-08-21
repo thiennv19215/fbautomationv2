@@ -424,6 +424,8 @@ export default function App() {
               {view === "extensions" && (
                 <Extensions
                   extensions={data.extensions}
+                  accounts={data.accounts}
+                  setModal={setModal}
                   notify={notify}
                   reload={() => load(true)}
                 />
@@ -1235,25 +1237,35 @@ function Accounts({ accounts, extensions, extensionMap, jobs, setModal, notify, 
   );
 }
 
-function Extensions({ extensions, notify, reload }) {
+function Extensions({ extensions, accounts = [], setModal, notify, reload }) {
   return (
     <>
       <PageToolbar
-        title={`${extensions.length} phiên đang kết nối`}
-        subtitle="Danh tính, template capture và tải của từng Chrome Profile."
+        title={`${extensions.length} Chrome Profile / Nick Via`}
+        subtitle="Quản lý chi tiết danh tính tài khoản Facebook, trạng thái Template và dàn Fanpage của từng Chrome Profile."
       />
       {extensions.length ? (
         <div className="extension-grid">
-          {extensions.map((e) => (
-            <ExtensionCard key={e.id} extension={e} notify={notify} reload={reload} />
-          ))}
+          {extensions.map((e) => {
+            const childPages = accounts.filter((a) => a.extension_id === e.id);
+            return (
+              <ExtensionCard
+                key={e.id}
+                extension={e}
+                childPages={childPages}
+                setModal={setModal}
+                notify={notify}
+                reload={reload}
+              />
+            );
+          })}
         </div>
       ) : (
         <div className="panel">
           <Empty
             icon={MonitorDot}
-            title="Chưa thấy extension"
-            text="Hãy mở Chrome Profile có FBEM và một tab Facebook đã đăng nhập."
+            title="Chưa có Chrome Profile nào kết nối"
+            text="Hãy mở Chrome có cài đặt tiện ích FBEM và mở một tab Facebook đã đăng nhập."
           />
         </div>
       )}
@@ -1261,9 +1273,11 @@ function Extensions({ extensions, notify, reload }) {
   );
 }
 
-function ExtensionCard({ extension: e, notify, reload }) {
+function ExtensionCard({ extension: e, childPages = [], setModal, notify, reload }) {
   const [templates, setTemplates] = useState(null);
   const [checking, setChecking] = useState(false);
+  const [scanning, setScanning] = useState(false);
+
   useEffect(() => {
     endpoints.templateStatus(e.id).then(setTemplates).catch(() => setTemplates(null));
   }, [e.id]);
@@ -1272,7 +1286,7 @@ function ExtensionCard({ extension: e, notify, reload }) {
     setChecking(true);
     try {
       const result = await endpoints.extensionIdentity(e.id);
-      notify(`Đang đăng nhập: ${result.name || result.id}`);
+      notify(`Đồng bộ thành công: ${result.name || result.id}`);
       reload();
     } catch (err) {
       notify(err.message, "error");
@@ -1281,51 +1295,172 @@ function ExtensionCard({ extension: e, notify, reload }) {
     }
   };
 
+  const scanPages = async () => {
+    setScanning(true);
+    try {
+      const res = await endpoints.scanPages(e.id);
+      if (res && res.ok) {
+        notify(`Quét thành công: Tìm thấy ${res.totalFound} Fanpage (Thêm mới ${res.savedNew} Page)`);
+        reload();
+      } else {
+        notify(res.error || "Không thể quét danh sách Fanpage", "error");
+      }
+    } catch (err) {
+      notify(err.message || "Lỗi khi quét Fanpage", "error");
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  const copyId = (text, label = "ID") => {
+    navigator.clipboard?.writeText(String(text));
+    notify(`Đã sao chép ${label}: ${text}`);
+  };
+
+  const nickName = e.fbUser?.name || (e.id === "legacy" ? "Extension (Chưa reload)" : "Nick Facebook (Chưa đồng bộ)");
+  const uid = e.fbUser?.id || null;
+
   return (
     <article className="extension-card">
       <div className="extension-visual">
-        <Server />
-        <span className="online-dot" />
+        <User />
+        <span className={`online-dot ${e.connected === false ? "offline" : ""}`} />
       </div>
+
       <div className="extension-title">
-        <div>
-          <h3>{e.fbUser?.name || (e.id === "legacy" ? "Extension chưa reload" : "Chrome Profile")}</h3>
-          <code>{e.id}</code>
+        <div style={{ minWidth: 0 }}>
+          <h3 style={{ fontSize: "16px", fontWeight: "800", color: "#0f172a", display: "flex", alignItems: "center", gap: "8px" }}>
+            {nickName}
+            {e.fbUser?.name && <span className="verified-badge">✓ Nick chính</span>}
+          </h3>
+          <div style={{ marginTop: "4px", fontSize: "11px", color: "var(--muted)", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+            <span>UID:</span>
+            {uid ? (
+              <code
+                className="clickable-id"
+                onClick={() => copyId(uid, "UID")}
+                title="Bấm để sao chép UID"
+              >
+                {uid}
+              </code>
+            ) : (
+              <button
+                type="button"
+                className="text-button"
+                onClick={identity}
+                disabled={checking}
+                style={{ fontSize: "11px", padding: 0 }}
+              >
+                {checking ? "Đang đọc..." : "⚡ Bấm để đồng bộ UID"}
+              </button>
+            )}
+            <span>· Profile:</span>
+            <code
+              className="clickable-id"
+              onClick={() => copyId(e.id, "Profile ID")}
+              title="Bấm để sao chép Profile ID"
+            >
+              {e.id.slice(0, 14)}...
+            </code>
+          </div>
         </div>
-        <Badge status={e.busy ? "running" : "online"} />
+        <Badge status={e.busy ? "running" : e.connected === false ? "offline" : "online"} />
       </div>
+
+      {/* Managed Fanpages Section */}
+      <div style={{ padding: "12px 16px", background: "#f8fafc", borderRadius: "10px", margin: "14px 0", border: "1px solid #e2e8f0" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+          <span style={{ fontSize: "11px", fontWeight: "700", color: "#475569", textTransform: "uppercase", letterSpacing: "0.3px" }}>
+            🚩 Đang cầm {childPages.length} Fanpage
+          </span>
+          <button
+            type="button"
+            className="text-button"
+            onClick={scanPages}
+            disabled={scanning}
+            style={{ fontSize: "11px" }}
+          >
+            <Sparkles className={scanning ? "spin" : ""} /> {scanning ? "Đang quét..." : "Quét Page từ FB"}
+          </button>
+        </div>
+
+        {childPages.length > 0 ? (
+          <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+            {childPages.slice(0, 6).map((p) => (
+              <span
+                key={p.id}
+                style={{
+                  fontSize: "11px",
+                  padding: "3px 8px",
+                  background: "#ffffff",
+                  border: "1px solid #cbd5e1",
+                  borderRadius: "6px",
+                  color: "#1e293b",
+                  fontWeight: "600",
+                }}
+              >
+                {p.name}
+              </span>
+            ))}
+            {childPages.length > 6 && (
+              <span style={{ fontSize: "11px", padding: "3px 8px", color: "var(--muted)" }}>
+                +{childPages.length - 6} Page khác
+              </span>
+            )}
+          </div>
+        ) : (
+          <div style={{ fontSize: "11px", color: "var(--muted)" }}>
+            Chưa có Fanpage nào được liên kết. Bấm <b>"Quét Page từ FB"</b> để tự động lấy.
+          </div>
+        )}
+      </div>
+
       <div className="metrics">
         <div>
-          <span>Danh tính</span>
-          <b>{e.fbUser?.id || "Chưa đồng bộ"}</b>
-        </div>
-        <div>
           <span>Thành công</span>
-          <b>{e.successCount}</b>
+          <b style={{ color: "#059669" }}>{e.successCount || 0}</b>
         </div>
         <div>
           <span>Thất bại</span>
-          <b>{e.failedCount}</b>
+          <b style={{ color: e.failedCount > 0 ? "#e11d48" : "#64748b" }}>{e.failedCount || 0}</b>
         </div>
         <div>
-          <span>Pending</span>
-          <b>{e.pending}</b>
+          <span>Đang chờ</span>
+          <b>{e.pending || 0}</b>
+        </div>
+        <div>
+          <span>Fanpage</span>
+          <b style={{ color: "#2563eb" }}>{childPages.length}</b>
         </div>
       </div>
+
       <div className="template-status">
-        <span className={templates?.reel ? "ready" : "missing"}><Film /> Reel</span>
-        <span className={templates?.photo ? "ready" : "missing"}><Images /> Ảnh</span>
-        <span className={templates?.switchProfile ? "ready" : "missing"}><ShieldCheck /> Switch</span>
+        <span className={templates?.reel ? "ready" : "missing"} title="Sẵn sàng đăng Reel không cần thao tác tay"><Film /> Reel Native</span>
+        <span className={templates?.photo ? "ready" : "missing"} title="Sẵn sàng đăng Ảnh / Album"><Images /> Ảnh / Album</span>
+        <span className={templates?.switchProfile ? "ready" : "missing"} title="Sẵn sàng chuyển quyền quản trị Fanpage"><ShieldCheck /> Chuyển Page</span>
       </div>
+
       <div className="extension-footer">
         <div className="last-seen">
           <Activity /> Hoạt động {relativeTime(e.lastActiveAt)}
         </div>
-        <button className="secondary compact" onClick={identity} disabled={checking}>
-          <RefreshCw className={checking ? "spin" : ""} />
-          Kiểm tra danh tính
-        </button>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button className="secondary compact" onClick={identity} disabled={checking} title="Đọc tên và UID từ Facebook tab">
+            <RefreshCw className={checking ? "spin" : ""} />
+            {checking ? "Đang đọc..." : "Đồng bộ"}
+          </button>
+          {childPages.length > 0 && (
+            <button
+              className="primary compact"
+              onClick={() => setModal({ type: "job", initialAccountIds: childPages.map((p) => p.id) })}
+              title="Đăng bài cho dàn Fanpage của Nick này"
+            >
+              <Plus /> Đăng bài
+            </button>
+          )}
+        </div>
       </div>
+
       {e.id === "legacy" && (
         <div className="warning-note">
           <CircleAlert /> Reload FBEM tại chrome://extensions để kích hoạt mã phiên ổn định.

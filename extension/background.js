@@ -98,17 +98,34 @@ function sendLastActive() {
   }
 }
 
-async function reportIdentity() {
-  const tab = await findFbTab(1, 0);
-  if (!tab?.id || ws?.readyState !== WebSocket.OPEN) return;
-  try {
-    const result = await chrome.tabs.sendMessage(tab.id, { type: 'get_identity', id: 'hello_' + Date.now() });
-    if (result?.ok) ws.send(JSON.stringify({
-      type: 'fb_user', extensionId,
-      fbUser: { id: String(result.identityId || ''), name: result.identityName || null },
-    }));
-  } catch (_) { /* content script may still be starting; next reconnect retries */ }
+async function reportIdentity(attempts = 3) {
+  for (let i = 0; i < attempts; i++) {
+    const tab = await findFbTab(2, 800);
+    if (!tab?.id || ws?.readyState !== WebSocket.OPEN) {
+      if (i < attempts - 1) await new Promise((r) => setTimeout(r, 1200));
+      continue;
+    }
+    try {
+      const result = await chrome.tabs.sendMessage(tab.id, { type: 'get_identity', id: 'hello_' + Date.now() });
+      if (result?.ok && result.identityId) {
+        ws.send(JSON.stringify({
+          type: 'fb_user',
+          extensionId,
+          fbUser: { id: String(result.identityId || ''), name: result.identityName || null },
+        }));
+        return;
+      }
+    } catch (_) {}
+    if (i < attempts - 1) await new Promise((r) => setTimeout(r, 1500));
+  }
 }
+
+// Auto-report identity when user opens or refreshes a Facebook tab
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === 'complete' && tab.url && (tab.url.includes('facebook.com') || tab.url.includes('fb.com'))) {
+    setTimeout(() => reportIdentity(2), 1500);
+  }
+});
 
 // ─── WebSocket to Agent ─────────────────────────────────────
 
@@ -130,7 +147,7 @@ function connectToAgent() {
     chrome.alarms.clear('reconnect');
     ws.send(JSON.stringify({ type: 'hello', extensionId, version: chrome.runtime.getManifest().version }));
     ws.send(JSON.stringify({ type: 'fb_ready', extensionId }));
-    setTimeout(reportIdentity, 1500);
+    setTimeout(() => reportIdentity(3), 1000);
   };
 
   ws.onmessage = async ({ data }) => {
