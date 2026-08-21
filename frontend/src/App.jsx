@@ -807,6 +807,7 @@ function Accounts({ accounts, extensions, extensionMap, jobs, setModal, notify, 
   }, [accounts, extensions]);
 
   const [scanning, setScanning] = useState(null);
+  const [scanningPages, setScanningPages] = useState(null);
 
   const scanIdentity = async (extId) => {
     setScanning(extId);
@@ -818,6 +819,23 @@ function Accounts({ accounts, extensions, extensionMap, jobs, setModal, notify, 
       notify(err.message, "error");
     } finally {
       setScanning(null);
+    }
+  };
+
+  const scanAllPages = async (extId) => {
+    setScanningPages(extId);
+    try {
+      const res = await endpoints.scanPages(extId);
+      if (res && res.ok) {
+        notify(`Quét thành công: Tìm thấy ${res.totalFound} Fanpage (Thêm mới ${res.savedNew} Page)`);
+        reload();
+      } else {
+        notify(res.error || "Không thể quét danh sách Fanpage", "error");
+      }
+    } catch (err) {
+      notify(err.message || "Lỗi khi quét Fanpage", "error");
+    } finally {
+      setScanningPages(null);
     }
   };
 
@@ -864,22 +882,33 @@ function Accounts({ accounts, extensions, extensionMap, jobs, setModal, notify, 
 
                   <div className="via-actions">
                     {isOnline && (
-                      <button
-                        className="secondary compact"
-                        onClick={() => scanIdentity(ext.id)}
-                        disabled={scanning === ext.id}
-                        title="Quét tên và ID đang mở trên Facebook tab"
-                      >
-                        <RefreshCw className={scanning === ext.id ? "spin" : ""} />
-                        Quét Tab FB
-                      </button>
+                      <>
+                        <button
+                          className="secondary compact"
+                          onClick={() => scanAllPages(ext.id)}
+                          disabled={scanningPages === ext.id}
+                          title="Tự động quét toàn bộ các Fanpage do Nick này quản lý và lưu vào hệ thống"
+                        >
+                          <Sparkles className={scanningPages === ext.id ? "spin" : ""} />
+                          {scanningPages === ext.id ? "Đang quét..." : "Tự động quét Page"}
+                        </button>
+                        <button
+                          className="secondary compact"
+                          onClick={() => scanIdentity(ext.id)}
+                          disabled={scanning === ext.id}
+                          title="Quét tên và ID đang mở trên Facebook tab"
+                        >
+                          <RefreshCw className={scanning === ext.id ? "spin" : ""} />
+                          Quét Tab FB
+                        </button>
+                      </>
                     )}
                     <button
                       className="primary compact"
                       onClick={() => setModal({ type: "account", defaultExtensionId: ext.id })}
-                      title="Thêm Fanpage do nick này quản lý"
+                      title="Thêm Fanpage thủ công cho nick này"
                     >
-                      <Plus /> Thêm Page cho Nick này
+                      <Plus /> Thêm thủ công
                     </button>
                   </div>
                 </div>

@@ -39,9 +39,10 @@ window.addEventListener('message', (event) => {
     data.type === 'post_reel_result' ||
     data.type === 'post_photos_result' ||
     data.type === 'switch_profile_result' ||
-    data.type === 'get_identity_result'
+    data.type === 'get_identity_result' ||
+    data.type === 'scan_pages_result'
   ) {
-    // Replay/switch finished in the page. Reply to the pending background request
+    // Replay/switch/scan finished in the page. Reply to the pending background request
     // if we own it; otherwise relay up as a fire-and-forget result.
     const payload = {
       type: data.type,
@@ -57,6 +58,8 @@ window.addEventListener('message', (event) => {
       // switch fields
       identityId: data.identityId,
       identityName: data.identityName,
+      // scan pages
+      pages: data.pages || [],
     };
     const cb = data.id != null ? pendingReel.get(data.id) : undefined;
     if (cb) {
@@ -76,7 +79,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     (msg.type !== 'post_reel' &&
       msg.type !== 'post_photos' &&
       msg.type !== 'switch_profile' &&
-      msg.type !== 'get_identity')
+      msg.type !== 'get_identity' &&
+      msg.type !== 'scan_pages')
   )
     return;
   // Stash the async reply callback; the page answers via <type>_result.

@@ -120,6 +120,17 @@ function connectToAgent() {
   try {
     ws = new WebSocket(AGENT_WS_URL);
   } catch (e) {
+
+// ─── WebSocket to Agent ─────────────────────────────────────
+
+function connectToAgent() {
+  if (manualDisconnect) return;
+  if (ws?.readyState === WebSocket.CONNECTING) return;
+  if (ws?.readyState === WebSocket.OPEN) return;
+
+  try {
+    ws = new WebSocket(AGENT_WS_URL);
+  } catch (e) {
     console.error('[FBBridge] WS connect error:', e);
     scheduleReconnect();
     return;
@@ -131,72 +142,6 @@ function connectToAgent() {
     ws.send(JSON.stringify({ type: 'hello', extensionId, version: chrome.runtime.getManifest().version }));
     ws.send(JSON.stringify({ type: 'fb_ready', extensionId }));
     setTimeout(reportIdentity, 1500);
-    sendLastActive(); // anchor the tab TTL on (re)connect
-  };
-
-  ws.onmessage = async ({ data }) => {
-    try {
-      const msg = JSON.parse(data);
-
-      if (msg.type === 'callback_secret') {
-        callbackSecret = msg.secret;
-        chrome.storage.local.set({ callbackSecret: msg.secret });
-        console.log('[FBBridge] Received callback secret');
-        return;
-      }
-      if (msg.type === 'pong') {
-        // keepalive response — no-op
-        return;
-      }
-
-      if (msg.method === 'post_reel') {
-        postInFlight++;
-        try { await handlePostReel(msg); } finally { postInFlight--; }
-        return;
-      }
-      if (msg.method === 'post_photos') {
-        postInFlight++;
-        try { await handlePostPhotos(msg); } finally { postInFlight--; }
-        return;
-      }
-      if (msg.method === 'switch_profile') {
-        postInFlight++;
-        try { await handleSwitchProfile(msg); } finally { postInFlight--; }
-        return;
-      }
-      if (msg.method === 'get_identity') {
-        await handleGetIdentity(msg);
-        return;
-      }
-    } catch (e) {
-      console.error('[FBBridge] Message error:', e);
-    }
-  };
-
-  ws.onclose = () => {
-    if (!manualDisconnect) scheduleReconnect();
-  };
-
-  ws.onerror = (e) => {
-    console.error('[FBBridge] WS error:', e);
-  };
-}
-
-function scheduleReconnect() {
-  chrome.alarms.create('reconnect', { delayInMinutes: 0.083 }); // ~5 s
-}
-
-function keepAlive() {
-  if (ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'ping' }));
-  } else {
-    connectToAgent();
-  }
-}
-
-// ─── Send to Agent ──────────────────────────────────────────
-
-/**
  * Route a message to the agent.
  * Responses (msg.id present) go via HTTP callback — immune to WS drops.
  * Falls back to WS on HTTP failure. Non-response messages use WS directly.
@@ -611,6 +556,21 @@ async function handleSwitchProfile(msg) {
     ) {
       sendToAgent({ id, status: 503, error: 'no_facebook_tab' });
     } else {
+      } else {
+        sendToAgent({ id, status: 502, error: `switch_unverified: tab acts as ${after || 'unknown'} after switching to ${params.targetId}` });
+      }
+    } else {
+      sendToAgent({ id, status: 500, error: (result && result.error) || 'switch_failed' });
+    }
+  } catch (e) {
+    const m = e?.message || '';
+    if (
+      m.includes('Receiving end does not exist') ||
+      m.includes('Could not establish connection') ||
+      m.includes('No tab with id')
+    ) {
+      sendToAgent({ id, status: 503, error: 'no_facebook_tab' });
+    } else {
       sendToAgent({ id, status: 500, error: m || 'switch_failed' });
     }
   }
@@ -651,21 +611,51 @@ async function handleGetIdentity(msg) {
   }
 }
 
+// ─── scan_pages: scan all managed Fanpages in the Facebook account ──
+
+async function handleScanPages(msg) {
+  const { id } = msg;
+  const tab = await findFbTab();
+  if (!tab) {
+    sendToAgent({ id, status: 503, error: 'no_facebook_tab' });
+    return;
+  }
+  try {
+    const result = await chrome.tabs.sendMessage(tab.id, { type: 'scan_pages', id });
+    if (result && result.ok) {
+      sendToAgent({
+        id,
+        status: 200,
+        data: { pages: result.pages || [] },
+      });
+    } else {
+      sendToAgent({ id, status: 500, error: (result && result.error) || 'scan_failed', data: { pages: [] } });
+    }
+  } catch (e) {
+    const m = e?.message || '';
+    if (
+      m.includes('Receiving end does not exist') ||
+      m.includes('Could not establish connection') ||
+      m.includes('No tab with id')
+    ) {
+      sendToAgent({ id, status: 503, error: 'no_facebook_tab' });
+    } else {
+      sendToAgent({ id, status: 500, error: m || 'scan_failed', data: { pages: [] } });
+    }
+  }
+}
+
 // ─── Runtime messages from content scripts ──────────────────
 
 chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
   if (!msg || !msg.type) return;
 
-  // Crawler snapshot of a genuine native request → push to capture sink.
   if (msg.type === 'capture') {
     postCapture(msg.payload);
     reply?.({ ok: true });
-    return; // sync reply; no async channel needed
+    return;
   }
 
-  // Replay result relayed up from the page (in addition to the direct
-  // sendMessage reply path in handlePostReel — belt and suspenders if the
-  // page chooses to emit it as a fire-and-forget event).
   if (msg.type === 'post_reel_result') {
     if (msg.id) {
       if (msg.ok) {
@@ -704,6 +694,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
         sendToAgent({ id: msg.id, status: 200, data: { identityId: msg.identityId, identityName: msg.identityName } });
       } else {
         sendToAgent({ id: msg.id, status: 500, error: msg.error || 'switch_failed' });
+      }
+    }
+    reply?.({ ok: true });
+    return;
+  }
+
+  if (msg.type === 'scan_pages_result') {
+    if (msg.id) {
+      if (msg.ok) {
+        sendToAgent({ id: msg.id, status: 200, data: { pages: msg.pages || [] } });
+      } else {
+        sendToAgent({ id: msg.id, status: 500, error: msg.error || 'scan_failed', data: { pages: [] } });
       }
     }
     reply?.({ ok: true });

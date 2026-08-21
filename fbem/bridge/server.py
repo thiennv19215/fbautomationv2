@@ -338,17 +338,11 @@ class PostPhotosBody(BaseModel):
             raise ValueError(
                 f"scheduledPublishTime must be epoch SECONDS (got {v}; looks like ms or out of range)"
             )
-
-    @field_validator("scheduledPublishTime")
-    @classmethod
-    def _check_schedule(cls, v: int | None) -> int | None:
-        if v is None:
-            return v
-        if v < 1_000_000_000 or v > 10_000_000_000:
-            raise ValueError(
-                f"scheduledPublishTime must be epoch SECONDS (got {v}; looks like ms or out of range)"
-            )
         return v
+
+
+class ScanPagesBody(BaseModel):
+    extensionId: str | None = None
 
 
 class SwitchProfileBody(BaseModel):
@@ -559,6 +553,47 @@ async def current_identity() -> dict:
         raise HTTPException(status_code=502, detail=str(resp["error"])[:300])
     data = resp.get("data") or {}
     return normalize_browser_text({"id": data.get("identityId"), "name": data.get("identityName")})
+
+
+@app.post("/api/scan-pages")
+async def scan_pages(body: ScanPagesBody) -> dict:
+    """Scan all managed Fanpages from the connected Facebook tab and auto-register them."""
+    extension_id = body.extensionId
+    session = connection_registry.get(extension_id) if extension_id else connection_registry.default()
+    if not session:
+        raise HTTPException(status_code=503, detail="extension_not_connected")
+
+    resp = await session.send("scan_pages", {}, timeout=30.0)
+    if resp.get("error"):
+        raise HTTPException(status_code=502, detail=str(resp["error"]))
+
+    data = resp.get("data") or {}
+    pages = data.get("pages") or []
+
+    # Auto-save discovered pages to database
+    saved_count = 0
+    for p in pages:
+        p_id = str(p.get("id", "")).strip()
+        p_name = str(p.get("name", "")).strip()
+        if p_id and p_name:
+            existing = [a for a in admin_store.list_rows("accounts") if a.get("facebook_id") == p_id]
+            if not existing:
+                admin_store.save_account({
+                    "name": p_name,
+                    "facebookId": p_id,
+                    "extensionId": session.extension_id,
+                    "accountType": "page",
+                    "notes": "Tự động quét từ FB",
+                    "enabled": True,
+                })
+                saved_count += 1
+
+    return {
+        "ok": True,
+        "totalFound": len(pages),
+        "savedNew": saved_count,
+        "pages": pages,
+    }
 
 
 @app.post("/api/ext/callback")
