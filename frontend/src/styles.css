@@ -92,4 +92,28 @@
 .hashtag-chip:hover{background:#2563eb;color:#fff;border-color:#2563eb}
 .section-divider{border-top:1px dashed #e2e8f0;margin:14px 0 10px}
 
+/* ─── Hierarchical Via & Pages UI ─────────────────────── */
+.via-groups{display:flex;flex-direction:column;gap:20px}
+.via-card{background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);overflow:hidden}
+.via-header{background:linear-gradient(90deg,#f8fafc,#edf2f9);border-bottom:1px solid var(--line);padding:16px 20px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px}
+.via-info{display:flex;align-items:center;gap:13px}
+.via-avatar{width:44px;height:44px;border-radius:12px;display:grid;place-items:center;background:linear-gradient(135deg,#3b82f6,#1d4ed8);color:#fff;font-weight:800;font-size:14px}
+.via-titles h3{font-size:15px;margin:0;font-weight:800;color:#0f172a;display:flex;align-items:center;gap:8px}
+.via-titles p{font-size:10px;color:var(--muted);margin:3px 0 0}
+.via-titles code{font-size:9px;color:#64748b;background:#e2e8f0;padding:2px 6px;border-radius:4px}
+.via-actions{display:flex;align-items:center;gap:8px}
+.pages-container{padding:16px 20px}
+.pages-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px}
+.page-item-card{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;transition:all .15s}
+.page-item-card:hover{border-color:#bfdbfe;background:#f0f7ff}
+.page-item-info{display:flex;align-items:center;gap:10px;min-width:0}
+.page-icon-badge{width:34px;height:34px;border-radius:8px;display:grid;place-items:center;background:#eff6ff;color:#2563eb;flex-shrink:0}
+.page-text b{display:block;font-size:11px;font-weight:700;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.page-text span{display:block;font-size:9px;color:var(--muted);margin-top:2px}
+.page-item-actions{display:flex;align-items:center;gap:6px;flex-shrink:0}
+.picker-via-group{border-bottom:1px solid #e2e8f0;margin-bottom:8px;padding-bottom:8px}
+.picker-via-title{background:#f1f5f9;padding:6px 10px;border-radius:6px;font-size:10px;font-weight:800;color:#334155;display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.picker-via-title button{border:0;background:transparent;color:var(--blue);font-size:9px;font-weight:700;cursor:pointer}
+
+
 

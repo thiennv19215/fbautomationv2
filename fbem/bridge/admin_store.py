@@ -33,6 +33,7 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS accounts (
           id TEXT PRIMARY KEY, name TEXT NOT NULL, facebook_id TEXT NOT NULL,
           extension_id TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+          account_type TEXT DEFAULT 'page', parent_id TEXT, notes TEXT DEFAULT '',
           created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS scripts (
@@ -51,6 +52,13 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS jobs_status_created ON jobs(status, created_at);
         CREATE INDEX IF NOT EXISTS jobs_account_status ON jobs(account_id, status);
         """)
+        cols = {col[1] for col in db.execute("PRAGMA table_info(accounts)").fetchall()}
+        if "account_type" not in cols:
+            db.execute("ALTER TABLE accounts ADD COLUMN account_type TEXT DEFAULT 'page'")
+        if "parent_id" not in cols:
+            db.execute("ALTER TABLE accounts ADD COLUMN parent_id TEXT")
+        if "notes" not in cols:
+            db.execute("ALTER TABLE accounts ADD COLUMN notes TEXT DEFAULT ''")
 
 
 def _row(row: sqlite3.Row | None) -> dict | None:
@@ -88,9 +96,11 @@ def save_account(data: dict, item_id: str | None = None) -> dict:
     with _connect() as db:
         existing = db.execute("SELECT created_at FROM accounts WHERE id=?", (item_id,)).fetchone()
         db.execute("""INSERT OR REPLACE INTO accounts
-          (id,name,facebook_id,extension_id,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?)""",
+          (id,name,facebook_id,extension_id,enabled,account_type,parent_id,notes,created_at,updated_at)
+          VALUES(?,?,?,?,?,?,?,?,?,?)""",
           (item_id, data["name"].strip(), str(data["facebookId"]).strip(),
            str(data["extensionId"]).strip(), int(data.get("enabled", True)),
+           data.get("accountType", "page"), data.get("parentId"), data.get("notes", ""),
            existing[0] if existing else now, now))
     return get_row("accounts", item_id) or {}
 

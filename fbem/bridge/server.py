@@ -120,6 +120,9 @@ class AccountBody(BaseModel):
     name: str
     facebookId: str
     extensionId: str
+    accountType: str = "page"  # 'profile' | 'page'
+    parentId: str | None = None
+    notes: str = ""
     enabled: bool = True
 
 

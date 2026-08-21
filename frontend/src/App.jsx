@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity, BookOpen, Bot, CheckCircle2, ChevronRight, CircleAlert, Clock3,
-  Copy, Eye, Film, GalleryVerticalEnd, Hash, History, Images, LayoutDashboard, Menu,
-  MonitorDot, Pencil, Plus, RefreshCw, RotateCcw, Search, Server, Settings2,
-  ShieldCheck, Sparkles, Timer, Trash2, UserRound, UsersRound, X,
+  Copy, ExternalLink, Eye, Film, Flag, FolderTree, GalleryVerticalEnd, Hash,
+  History, Images, Layers, LayoutDashboard, Menu, MonitorDot, Pencil, Plus,
+  RefreshCw, RotateCcw, Search, Server, Settings2, ShieldCheck, Sparkles,
+  Timer, Trash2, User, UserRound, UsersRound, X,
 } from "lucide-react";
 import { endpoints } from "./api";
 
@@ -412,9 +413,12 @@ export default function App() {
               {view === "accounts" && (
                 <Accounts
                   accounts={data.accounts}
+                  extensions={data.extensions}
                   extensionMap={extensionMap}
                   jobs={data.jobs}
                   setModal={setModal}
+                  notify={notify}
+                  reload={() => load(true)}
                 />
               )}
               {view === "extensions" && (
@@ -464,15 +468,16 @@ export default function App() {
         <AccountModal
           extensions={data.extensions}
           account={modal?.account}
+          defaultExtensionId={modal?.defaultExtensionId}
           close={() => setModal(null)}
           submit={(body) =>
             modal?.account
               ? submit(
                   (value) => endpoints.updateAccount(modal.account.id, value),
                   body,
-                  "Đã cập nhật tài khoản"
+                  "Đã cập nhật Fanpage"
                 )
-              : submit(endpoints.createAccount, body, "Đã thêm tài khoản")
+              : submit(endpoints.createAccount, body, "Đã thêm Fanpage")
           }
         />
       )}
@@ -768,81 +773,196 @@ function Overview({
   );
 }
 
-function Accounts({ accounts, extensionMap, jobs, setModal }) {
+function Accounts({ accounts, extensions, extensionMap, jobs, setModal, notify, reload }) {
+  const viaGroups = useMemo(() => {
+    const extList = [...extensions];
+    const accountedExtIds = new Set(extList.map((e) => e.id));
+    const orphanedAccounts = accounts.filter((a) => !accountedExtIds.has(a.extension_id));
+
+    const groups = extList.map((ext) => {
+      const childPages = accounts.filter((a) => a.extension_id === ext.id);
+      return {
+        ext,
+        isOnline: true,
+        pages: childPages,
+      };
+    });
+
+    if (orphanedAccounts.length > 0) {
+      const orphanedByExt = {};
+      orphanedAccounts.forEach((a) => {
+        if (!orphanedByExt[a.extension_id]) orphanedByExt[a.extension_id] = [];
+        orphanedByExt[a.extension_id].push(a);
+      });
+      Object.entries(orphanedByExt).forEach(([extId, pages]) => {
+        groups.push({
+          ext: { id: extId, fbUser: null },
+          isOnline: false,
+          pages,
+        });
+      });
+    }
+
+    return groups;
+  }, [accounts, extensions]);
+
+  const [scanning, setScanning] = useState(null);
+
+  const scanIdentity = async (extId) => {
+    setScanning(extId);
+    try {
+      const res = await endpoints.extensionIdentity(extId);
+      notify(`Đang đăng nhập: ${res.name || res.id}`);
+      reload();
+    } catch (err) {
+      notify(err.message, "error");
+    } finally {
+      setScanning(null);
+    }
+  };
+
   return (
     <>
       <PageToolbar
-        title={`${accounts.length} tài khoản`}
-        subtitle="Mỗi tài khoản được khóa với một Chrome Profile riêng."
+        title={`${accounts.length} Fanpage / Tài khoản`}
+        subtitle="Quản lý tập trung các Nick Via (Chrome Profile) và dàn Fanpage trực thuộc."
         action={
-          <button className="primary" onClick={() => setModal("account")}>
-            <Plus /> Thêm tài khoản
+          <button className="primary" onClick={() => setModal({ type: "account" })}>
+            <Plus /> Thêm Fanpage
           </button>
         }
       />
-      {accounts.length ? (
-        <div className="account-cards">
-          {accounts.map((a) => {
-            const ext = extensionMap[a.extension_id];
-            const active = jobs.filter(
-              (j) =>
-                j.account_id === a.id &&
-                ["queued", "running", "waiting_connection"].includes(j.status)
-            );
+
+      {viaGroups.length ? (
+        <div className="via-groups">
+          {viaGroups.map((group) => {
+            const ext = group.ext;
+            const viaName =
+              ext.fbUser?.name ||
+              (ext.id === "legacy" ? "Chrome Profile (Chưa reload)" : `Nick Via · ${ext.id.slice(0, 8)}`);
+            const viaUid = ext.fbUser?.id || "Chưa đồng bộ UID";
+            const isOnline = group.isOnline;
+
             return (
-              <article className="account-card" key={a.id}>
-                <div className="account-card-top">
-                  <div className="large-avatar">{a.name.slice(0, 2).toUpperCase()}</div>
-                  <div className="card-actions">
-                    <Badge status={ext ? "online" : "offline"} />
+              <article className="via-card" key={ext.id}>
+                <div className="via-header">
+                  <div className="via-info">
+                    <div className="via-avatar">
+                      <User />
+                    </div>
+                    <div className="via-titles">
+                      <h3>
+                        {viaName}
+                        <Badge status={isOnline ? (ext.busy ? "running" : "online") : "offline"} />
+                      </h3>
+                      <p>
+                        UID: <b>{viaUid}</b> · Chrome Profile: <code>{ext.id.slice(0, 16)}...</code> · Đang cầm{" "}
+                        <b>{group.pages.length} Fanpage</b>
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="via-actions">
+                    {isOnline && (
+                      <button
+                        className="secondary compact"
+                        onClick={() => scanIdentity(ext.id)}
+                        disabled={scanning === ext.id}
+                        title="Quét tên và ID đang mở trên Facebook tab"
+                      >
+                        <RefreshCw className={scanning === ext.id ? "spin" : ""} />
+                        Quét Tab FB
+                      </button>
+                    )}
                     <button
-                      className="icon-button"
-                      title="Chỉnh sửa"
-                      onClick={() => setModal({ type: "account", account: a })}
+                      className="primary compact"
+                      onClick={() => setModal({ type: "account", defaultExtensionId: ext.id })}
+                      title="Thêm Fanpage do nick này quản lý"
                     >
-                      <Pencil />
-                    </button>
-                    <button
-                      className="icon-button danger"
-                      title="Xóa"
-                      onClick={() =>
-                        setModal({
-                          type: "confirm",
-                          title: "Xóa tài khoản?",
-                          text: `Tài khoản ${a.name} sẽ bị xóa khỏi dashboard. Lịch sử job vẫn được giữ lại.`,
-                          label: "Xóa tài khoản",
-                          success: "Đã xóa tài khoản",
-                          action: () => endpoints.deleteAccount(a.id),
-                        })
-                      }
-                    >
-                      <Trash2 />
+                      <Plus /> Thêm Page cho Nick này
                     </button>
                   </div>
                 </div>
-                <h3>{a.name}</h3>
-                <p>Facebook ID · {a.facebook_id}</p>
-                <dl>
-                  <div>
-                    <dt>Extension</dt>
-                    <dd>{ext?.id?.slice(0, 18) || "Chưa kết nối"}</dd>
-                  </div>
-                  <div>
-                    <dt>Hàng đợi</dt>
-                    <dd>{active.length} tác vụ</dd>
-                  </div>
-                  <div>
-                    <dt>Trạng thái</dt>
-                    <dd>{a.enabled ? "Đang quản lý" : "Đã tạm dừng"}</dd>
-                  </div>
-                </dl>
-                <button
-                  className="secondary full"
-                  disabled={!a.enabled}
-                  onClick={() => setModal({ type: "job", accountId: a.id })}
-                >
-                  <Plus /> Tạo tác vụ
-                </button>
+
+                <div className="pages-container">
+                  {group.pages.length ? (
+                    <div className="pages-grid">
+                      {group.pages.map((a) => {
+                        const active = jobs.filter(
+                          (j) =>
+                            j.account_id === a.id &&
+                            ["queued", "running", "waiting_connection"].includes(j.status)
+                        );
+                        return (
+                          <div className="page-item-card" key={a.id}>
+                            <div className="page-item-info">
+                              <div className="page-icon-badge">
+                                <Flag />
+                              </div>
+                              <div className="page-text">
+                                <b>{a.name}</b>
+                                <span>ID: {a.facebook_id} {a.notes ? `· ${a.notes}` : ""}</span>
+                                <small
+                                  style={{
+                                    color: active.length > 0 ? "var(--blue)" : "var(--muted)",
+                                    fontSize: "9px",
+                                  }}
+                                >
+                                  {active.length > 0 ? `⏳ ${active.length} tác vụ chờ` : "✓ Sẵn sàng"}
+                                </small>
+                              </div>
+                            </div>
+
+                            <div className="page-item-actions">
+                              <button
+                                className="icon-button"
+                                title="Chỉnh sửa"
+                                onClick={() => setModal({ type: "account", account: a })}
+                              >
+                                <Pencil />
+                              </button>
+                              <button
+                                className="icon-button danger"
+                                title="Xóa"
+                                onClick={() =>
+                                  setModal({
+                                    type: "confirm",
+                                    title: "Xóa Fanpage?",
+                                    text: `Fanpage ${a.name} sẽ bị xóa khỏi dashboard. Lịch sử job vẫn được giữ lại.`,
+                                    label: "Xóa Fanpage",
+                                    success: "Đã xóa Fanpage",
+                                    action: () => endpoints.deleteAccount(a.id),
+                                  })
+                                }
+                              >
+                                <Trash2 />
+                              </button>
+                              <button
+                                className="secondary compact"
+                                disabled={!a.enabled || !isOnline}
+                                onClick={() => setModal({ type: "job", accountId: a.id })}
+                                title="Tạo tác vụ đăng bài cho Page này"
+                              >
+                                <Plus /> Đăng
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div
+                      style={{
+                        textAlign: "center",
+                        padding: "16px",
+                        color: "var(--muted)",
+                        fontSize: "11px",
+                      }}
+                    >
+                      Nick này chưa được thêm Fanpage nào. Nhấn <b>"Thêm Page cho Nick này"</b> để bắt đầu quản lý.
+                    </div>
+                  )}
+                </div>
               </article>
             );
           })}
@@ -851,11 +971,11 @@ function Accounts({ accounts, extensionMap, jobs, setModal }) {
         <div className="panel">
           <Empty
             icon={UsersRound}
-            title="Bắt đầu với tài khoản đầu tiên"
-            text="Tài khoản giúp hệ thống định tuyến chính xác nội dung tới đúng Chrome Profile."
+            title="Bắt đầu với Nick Facebook & Fanpage đầu tiên"
+            text="Hệ thống tự động phát hiện Chrome Profile có gắn extension và tab Facebook đang mở."
             action={
-              <button className="primary" onClick={() => setModal("account")}>
-                <Plus /> Thêm tài khoản
+              <button className="primary" onClick={() => setModal({ type: "account" })}>
+                <Plus /> Thêm Fanpage
               </button>
             }
           />
@@ -1237,18 +1357,41 @@ function PageToolbar({ title, subtitle, action, children }) {
   );
 }
 
-function AccountModal({ extensions, account, close, submit }) {
+function AccountModal({ extensions, account, defaultExtensionId, close, submit }) {
   const [form, setForm] = useState({
     name: account?.name || "",
     facebookId: account?.facebook_id || "",
-    extensionId: account?.extension_id || extensions[0]?.id || "",
+    extensionId: account?.extension_id || defaultExtensionId || extensions[0]?.id || "",
+    accountType: account?.account_type || "page",
+    notes: account?.notes || "",
     enabled: account?.enabled ?? true,
   });
 
+  const [detecting, setDetecting] = useState(false);
+
+  const detectFromTab = async () => {
+    if (!form.extensionId) return;
+    setDetecting(true);
+    try {
+      const res = await endpoints.extensionIdentity(form.extensionId);
+      if (res && res.id) {
+        setForm((prev) => ({
+          ...prev,
+          name: prev.name || res.name || "Fanpage Facebook",
+          facebookId: res.id,
+        }));
+      }
+    } catch (err) {
+      console.warn("Could not auto-detect identity:", err);
+    } finally {
+      setDetecting(false);
+    }
+  };
+
   return (
     <Modal
-      title={account ? "Chỉnh sửa tài khoản" : "Thêm tài khoản"}
-      subtitle="Gắn tài khoản với đúng phiên trình duyệt Chrome Profile."
+      title={account ? "Chỉnh sửa Fanpage / Tài khoản" : "Thêm Fanpage do Nick Via quản lý"}
+      subtitle="Định tuyến đúng Chrome Profile và Page ID trên Facebook."
       onClose={close}
     >
       <form
@@ -1257,46 +1400,73 @@ function AccountModal({ extensions, account, close, submit }) {
           submit(form);
         }}
       >
-        <Field label="Tên hiển thị">
-          <input
-            required
-            value={form.name}
-            onChange={(e) => setForm({ ...form, name: e.target.value })}
-            placeholder="Ví dụ: Page Tin Tức AI"
-          />
-        </Field>
-        <Field label="Facebook / Page ID">
-          <input
-            required
-            value={form.facebookId}
-            onChange={(e) =>
-              setForm({ ...form, facebookId: e.target.value.replace(/\D/g, "") })
-            }
-            placeholder="61550123456789"
-          />
-        </Field>
-        <Field label="Extension (Chrome Profile)">
+        <Field label="Nick Via / Extension quản lý (Chrome Profile)">
           <select
             required
             value={form.extensionId}
             onChange={(e) => setForm({ ...form, extensionId: e.target.value })}
           >
-            <option value="">Chọn extension kết nối</option>
+            <option value="">Chọn Chrome Profile / Nick Via</option>
             {!extensions.some((x) => x.id === form.extensionId) && form.extensionId && (
               <option value={form.extensionId}>{form.extensionId} (offline)</option>
             )}
             {extensions.map((x) => (
               <option key={x.id} value={x.id}>
-                {x.fbUser?.name || x.id}
+                {x.fbUser?.name ? `${x.fbUser.name} (${x.id.slice(0, 8)})` : x.id}
               </option>
             ))}
           </select>
-          <small>Mỗi tài khoản nên dùng một Chrome Profile riêng để tránh xung đột.</small>
+          <small>Chọn nick Facebook (trình duyệt) có quyền quản trị Fanpage này.</small>
         </Field>
+
+        <Field label="Tên Fanpage">
+          <input
+            required
+            value={form.name}
+            onChange={(e) => setForm({ ...form, name: e.target.value })}
+            placeholder="Ví dụ: Hội Những Người Yêu Da Đẹp"
+          />
+        </Field>
+
+        <Field label="Facebook / Page ID">
+          <div style={{ display: "flex", gap: "8px" }}>
+            <input
+              required
+              value={form.facebookId}
+              onChange={(e) =>
+                setForm({ ...form, facebookId: e.target.value.replace(/\D/g, "") })
+              }
+              placeholder="61550123456789"
+              style={{ flex: 1 }}
+            />
+            {form.extensionId && (
+              <button
+                type="button"
+                className="secondary compact"
+                onClick={detectFromTab}
+                disabled={detecting}
+                title="Lấy ID từ tab Facebook đang mở"
+              >
+                <Sparkles className={detecting ? "spin" : ""} />
+                Lấy từ Tab FB
+              </button>
+            )}
+          </div>
+          <small>ID của Fanpage (hoặc UID cá nhân nếu muốn đăng lên tường cá nhân).</small>
+        </Field>
+
+        <Field label="Ghi chú phân loại">
+          <input
+            value={form.notes}
+            onChange={(e) => setForm({ ...form, notes: e.target.value })}
+            placeholder="Ví dụ: Page bán hàng, Page tin tức vệ tinh..."
+          />
+        </Field>
+
         <label className="toggle-row">
           <div>
             <b>Cho phép chạy tác vụ</b>
-            <span>Tắt để tạm dừng tài khoản mà không xóa dữ liệu.</span>
+            <span>Tắt để tạm dừng Fanpage mà không xóa dữ liệu.</span>
           </div>
           <input
             type="checkbox"
@@ -1306,8 +1476,8 @@ function AccountModal({ extensions, account, close, submit }) {
         </label>
         <ModalActions
           close={close}
-          disabled={!form.extensionId}
-          label={account ? "Cập nhật tài khoản" : "Thêm tài khoản"}
+          disabled={!form.extensionId || !form.name.trim() || !form.facebookId.trim()}
+          label={account ? "Cập nhật Fanpage" : "Thêm Fanpage"}
         />
       </form>
     </Modal>
@@ -1738,10 +1908,10 @@ function JobModal({ accounts, scripts, initialAccount, close, submit }) {
       onClose={close}
     >
       <form onSubmit={send}>
-        <Field label="Tài khoản thực thi">
+        <Field label="Fanpage / Tài khoản thực thi">
           <div className="account-picker">
             <div className="picker-head">
-              <span>Đã chọn {form.accountIds.length}/{enabled.length}</span>
+              <span>Đã chọn {form.accountIds.length}/{enabled.length} Fanpage</span>
               <button
                 type="button"
                 onClick={() =>
@@ -1757,19 +1927,55 @@ function JobModal({ accounts, scripts, initialAccount, close, submit }) {
                 {form.accountIds.length === enabled.length ? "Bỏ chọn" : "Chọn tất cả"}
               </button>
             </div>
-            {enabled.map((a) => (
-              <label key={a.id}>
-                <input
-                  type="checkbox"
-                  checked={form.accountIds.includes(a.id)}
-                  onChange={() => toggle(a.id)}
-                />
-                <span>
-                  {a.name}
-                  <small>{a.facebook_id}</small>
-                </span>
-              </label>
-            ))}
+            {Object.entries(
+              enabled.reduce((acc, a) => {
+                const k = a.extension_id || "Khác";
+                if (!acc[k]) acc[k] = [];
+                acc[k].push(a);
+                return acc;
+              }, {})
+            ).map(([extId, pageList]) => {
+              const allSelected = pageList.every((p) => form.accountIds.includes(p.id));
+              return (
+                <div key={extId} className="picker-via-group">
+                  <div className="picker-via-title">
+                    <span>👤 Nick Via · {extId.slice(0, 14)}... ({pageList.length} Page)</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const ids = pageList.map((p) => p.id);
+                        if (allSelected) {
+                          setForm({
+                            ...form,
+                            accountIds: form.accountIds.filter((id) => !ids.includes(id)),
+                          });
+                        } else {
+                          setForm({
+                            ...form,
+                            accountIds: Array.from(new Set([...form.accountIds, ...ids])),
+                          });
+                        }
+                      }}
+                    >
+                      {allSelected ? "Bỏ chọn nhóm" : "Chọn cả nhóm"}
+                    </button>
+                  </div>
+                  {pageList.map((a) => (
+                    <label key={a.id}>
+                      <input
+                        type="checkbox"
+                        checked={form.accountIds.includes(a.id)}
+                        onChange={() => toggle(a.id)}
+                      />
+                      <span>
+                        <b>{a.name}</b>
+                        <small>ID: {a.facebook_id} {a.notes ? `· ${a.notes}` : ""}</small>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              );
+            })}
           </div>
         </Field>
 

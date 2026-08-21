@@ -17,7 +17,9 @@ def _render(value, account: dict):
     if isinstance(value, str):
         values = {
             "{{account_name}}": account["name"],
+            "{{page_name}}": account["name"],
             "{{facebook_id}}": account["facebook_id"],
+            "{{page_id}}": account["facebook_id"],
             "{{date}}": datetime.now().strftime("%Y-%m-%d"),
         }
         for needle, replacement in values.items():
