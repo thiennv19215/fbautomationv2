@@ -12,6 +12,7 @@ const NAV = [
   ["overview", "Tổng quan", LayoutDashboard],
   ["accounts", "Tài khoản", UsersRound],
   ["extensions", "Extension", MonitorDot],
+  ["media", "Thư viện Video", FolderTree],
   ["scripts", "Thư viện kịch bản", BookOpen],
   ["jobs", "Hàng đợi & Tiến độ", History],
 ];
@@ -20,6 +21,7 @@ const TITLES = {
   overview: ["Tổng quan", "Theo dõi toàn bộ hệ thống xuất bản và tiến độ thời gian thực"],
   accounts: ["Quản lý tài khoản", "Gắn từng tài khoản với đúng Chrome Profile"],
   extensions: ["Extension", "Theo dõi các phiên trình duyệt đang kết nối"],
+  media: ["Thư viện Video & Media", "Tạo thư mục, tải lên file và phân loại video Reel cho từng dàn Fanpage"],
   scripts: ["Thư viện kịch bản", "Tạo nội dung một lần, vận hành trên nhiều tài khoản"],
   jobs: ["Hàng đợi & Tiến độ", "Kiểm soát chi tiết tiến độ thực thi từng bước và kết quả"],
 };
@@ -430,6 +432,12 @@ export default function App() {
                   reload={() => load(true)}
                 />
               )}
+              {view === "media" && (
+                <MediaLibrary
+                  setModal={setModal}
+                  notify={notify}
+                />
+              )}
               {view === "scripts" && <Scripts scripts={data.scripts} setModal={setModal} />}
               {view === "jobs" && (
                 <Jobs
@@ -506,6 +514,8 @@ export default function App() {
           scripts={data.scripts}
           initialAccount={modal.accountId}
           initialAccountIds={modal.initialAccountIds}
+          initialVideoUrl={modal.initialVideoUrl}
+          initialKind={modal.initialKind}
           close={() => setModal(null)}
           submit={async (body) => {
             const bulk = body.accountIds?.length > 1;
@@ -515,6 +525,32 @@ export default function App() {
               bulk ? `Đã tạo ${body.accountIds.length} tác vụ` : "Đã đưa tác vụ vào hàng đợi"
             );
           }}
+        />
+      )}
+
+      {modal?.type === "createFolder" && (
+        <CreateFolderModal
+          close={() => setModal(null)}
+          onDone={modal.onDone}
+          notify={notify}
+        />
+      )}
+
+      {modal?.type === "uploadMedia" && (
+        <UploadMediaModal
+          folders={modal.folders}
+          activeFolder={modal.activeFolder}
+          close={() => setModal(null)}
+          onDone={modal.onDone}
+          notify={notify}
+        />
+      )}
+
+      {modal?.type === "videoPreview" && (
+        <VideoPreviewModal
+          item={modal.item}
+          close={() => setModal(null)}
+          setModal={setModal}
         />
       )}
 
@@ -1470,6 +1506,270 @@ function ExtensionCard({ extension: e, childPages = [], setModal, notify, reload
   );
 }
 
+function MediaLibrary({ setModal, notify }) {
+  const [mediaData, setMediaData] = useState({ folders: [], items: [], totalFiles: 0, totalSize: 0 });
+  const [loading, setLoading] = useState(false);
+  const [activeFolder, setActiveFolder] = useState("all");
+  const [search, setSearch] = useState("");
+  const [kindFilter, setKindFilter] = useState("all");
+
+  const loadMedia = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await endpoints.media();
+      setMediaData(res || { folders: [], items: [], totalFiles: 0, totalSize: 0 });
+    } catch (e) {
+      notify("Không thể tải danh sách media: " + e.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  }, [notify]);
+
+  useEffect(() => {
+    loadMedia();
+  }, [loadMedia]);
+
+  const filteredItems = useMemo(() => {
+    let list = mediaData.items || [];
+    if (activeFolder !== "all") {
+      list = list.filter((m) => (activeFolder === "root" ? !m.folderPath : m.folderPath === activeFolder));
+    }
+    if (kindFilter !== "all") {
+      list = list.filter((m) => m.kind === kindFilter);
+    }
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      list = list.filter((m) => m.name.toLowerCase().includes(q) || (m.folder && m.folder.toLowerCase().includes(q)));
+    }
+    return list;
+  }, [mediaData.items, activeFolder, kindFilter, search]);
+
+  const handleDeleteFolder = async (folderPath, e) => {
+    e.stopPropagation();
+    if (!window.confirm(`Bạn có chắc chắn muốn xóa thư mục "${folderPath}" và toàn bộ file bên trong?`)) return;
+    try {
+      await endpoints.deleteFolder(folderPath);
+      notify(`Đã xóa thư mục ${folderPath}`);
+      if (activeFolder === folderPath) setActiveFolder("all");
+      loadMedia();
+    } catch (err) {
+      notify(err.message, "error");
+    }
+  };
+
+  const handleDeleteFile = async (relPath) => {
+    if (!window.confirm(`Bạn có chắc muốn xóa file "${relPath}"?`)) return;
+    try {
+      await endpoints.deleteMedia(relPath);
+      notify(`Đã xóa file: ${relPath}`);
+      loadMedia();
+    } catch (err) {
+      notify(err.message, "error");
+    }
+  };
+
+  const copyUrl = (url, name) => {
+    navigator.clipboard?.writeText(url);
+    notify(`Đã sao chép đường dẫn: ${name}`);
+  };
+
+  const formatSize = (bytes) => {
+    if (!bytes) return "0 MB";
+    if (bytes >= 1024 * 1024 * 1024) return (bytes / (1024 * 1024 * 1024)).toFixed(2) + " GB";
+    return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+  };
+
+  const formatDate = (epoch) => {
+    if (!epoch) return "";
+    const d = new Date(epoch * 1000);
+    return `${d.toLocaleDateString("vi-VN")} ${d.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}`;
+  };
+
+  return (
+    <>
+      <PageToolbar
+        title={`${mediaData.totalFiles || 0} File Media (${formatSize(mediaData.totalSize)})`}
+        subtitle="Quản lý các thư mục video và ảnh để đăng tự động lên dàn Fanpage."
+        action={
+          <div style={{ display: "flex", gap: "8px" }}>
+            <button
+              className="secondary"
+              onClick={() => setModal({ type: "createFolder", onDone: loadMedia })}
+            >
+              <Plus /> Tạo thư mục
+            </button>
+            <button
+              className="primary"
+              onClick={() => setModal({ type: "uploadMedia", folders: mediaData.folders, activeFolder, onDone: loadMedia })}
+            >
+              <Plus /> Tải video/ảnh lên
+            </button>
+          </div>
+        }
+      />
+
+      {/* Folder selector bar */}
+      <div className="folder-bar">
+        <button
+          type="button"
+          className={`folder-chip ${activeFolder === "all" ? "active" : ""}`}
+          onClick={() => setActiveFolder("all")}
+        >
+          <FolderTree /> Tất cả ({mediaData.totalFiles || 0})
+        </button>
+
+        <button
+          type="button"
+          className={`folder-chip ${activeFolder === "root" ? "active" : ""}`}
+          onClick={() => setActiveFolder("root")}
+        >
+          <Film /> Thư mục gốc ({(mediaData.items || []).filter((m) => !m.folderPath).length})
+        </button>
+
+        {(mediaData.folders || []).map((f) => (
+          <button
+            key={f.path}
+            type="button"
+            className={`folder-chip ${activeFolder === f.path ? "active" : ""}`}
+            onClick={() => setActiveFolder(f.path)}
+          >
+            <Film /> {f.name} ({f.count} file · {formatSize(f.size)})
+            <span
+              className="folder-chip-delete"
+              onClick={(e) => handleDeleteFolder(f.path, e)}
+              title="Xóa thư mục này"
+            >
+              ×
+            </span>
+          </button>
+        ))}
+      </div>
+
+      {/* Filter and Search Bar */}
+      <div className="search-filter-bar">
+        <div className="search-box">
+          <Search />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Tìm theo tên file video hoặc tên thư mục..."
+          />
+        </div>
+        <div className="filter-chips">
+          <button
+            type="button"
+            className={`filter-chip ${kindFilter === "all" ? "active" : ""}`}
+            onClick={() => setKindFilter("all")}
+          >
+            Tất cả
+          </button>
+          <button
+            type="button"
+            className={`filter-chip ${kindFilter === "video" ? "active" : ""}`}
+            onClick={() => setKindFilter("video")}
+          >
+            <Film /> Video Reel ({(mediaData.items || []).filter((m) => m.kind === "video").length})
+          </button>
+          <button
+            type="button"
+            className={`filter-chip ${kindFilter === "photo" ? "active" : ""}`}
+            onClick={() => setKindFilter("photo")}
+          >
+            <Images /> Ảnh / Album ({(mediaData.items || []).filter((m) => m.kind === "photo").length})
+          </button>
+        </div>
+      </div>
+
+      {/* Media Grid */}
+      {filteredItems.length ? (
+        <div className="media-library-grid">
+          {filteredItems.map((item) => (
+            <article key={item.relPath} className="media-card">
+              <div
+                className="media-thumb-box"
+                onClick={() => setModal({ type: "videoPreview", item })}
+              >
+                {item.kind === "video" ? (
+                  <video src={item.url} preload="metadata" />
+                ) : (
+                  <img src={item.url} alt={item.name} />
+                )}
+                <div className="media-play-overlay">
+                  <div className="media-play-btn">
+                    {item.kind === "video" ? <Film /> : <Eye />}
+                  </div>
+                </div>
+                <span className="media-kind-badge">
+                  {item.kind === "video" ? "🎬 Video Reel" : "📸 Ảnh"}
+                </span>
+                {item.folder && item.folder !== "Gốc (Chưa phân loại)" && (
+                  <span className="media-folder-badge">📁 {item.folder}</span>
+                )}
+              </div>
+
+              <div className="media-content">
+                <div className="media-filename" title={item.name}>
+                  {item.name}
+                </div>
+                <div className="media-meta-row">
+                  <span>{formatSize(item.size)}</span>
+                  <span>{formatDate(item.modifiedAt)}</span>
+                </div>
+
+                <div className="media-card-actions">
+                  <button
+                    className="primary compact full"
+                    onClick={() =>
+                      setModal({
+                        type: "job",
+                        initialVideoUrl: item.relPath,
+                        initialKind: item.kind === "video" ? "post_reel" : "post_photos",
+                      })
+                    }
+                    title="Tạo bài đăng với video này"
+                  >
+                    <Plus /> Đăng bài
+                  </button>
+                  <button
+                    className="secondary compact"
+                    onClick={() => copyUrl(item.url, item.name)}
+                    title="Sao chép liên kết URL nội bộ"
+                  >
+                    <Copy />
+                  </button>
+                  <button
+                    className="secondary compact"
+                    onClick={() => handleDeleteFile(item.relPath)}
+                    title="Xóa file này"
+                  >
+                    <Trash2 />
+                  </button>
+                </div>
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <div className="panel">
+          <Empty
+            icon={Film}
+            title={loading ? "Đang tải thư viện media..." : "Chưa có file nào trong thư mục này"}
+            text="Hãy bấm 'Tải video/ảnh lên' hoặc 'Tạo thư mục' để bắt đầu lưu trữ video cho các chiến dịch."
+            action={
+              <button
+                className="primary"
+                onClick={() => setModal({ type: "uploadMedia", folders: mediaData.folders, activeFolder, onDone: loadMedia })}
+              >
+                <Plus /> Tải video lên ngay
+              </button>
+            }
+          />
+        </div>
+      )}
+    </>
+  );
+}
+
 function Scripts({ scripts, setModal }) {
   return (
     <>
@@ -1898,16 +2198,17 @@ function HashtagPicker({ value, onChange }) {
 }
 
 function MediaPicker({ kind = "video", selected, onSelect }) {
-  const [mediaList, setMediaList] = useState([]);
+  const [mediaData, setMediaData] = useState({ folders: [], items: [] });
   const [loading, setLoading] = useState(false);
+  const [folderFilter, setFolderFilter] = useState("all");
 
   const fetchMedia = useCallback(async () => {
     setLoading(true);
     try {
       const res = await endpoints.media();
-      setMediaList(res.items || []);
+      setMediaData(res || { folders: [], items: [] });
     } catch {
-      setMediaList([]);
+      setMediaData({ folders: [], items: [] });
     } finally {
       setLoading(false);
     }
@@ -1918,40 +2219,62 @@ function MediaPicker({ kind = "video", selected, onSelect }) {
   }, [fetchMedia]);
 
   const filtered = useMemo(() => {
-    return mediaList.filter((m) => !kind || m.kind === kind);
-  }, [mediaList, kind]);
+    let list = mediaData.items || [];
+    if (kind) list = list.filter((m) => m.kind === kind);
+    if (folderFilter !== "all") {
+      list = list.filter((m) => (folderFilter === "root" ? !m.folderPath : m.folderPath === folderFilter));
+    }
+    return list;
+  }, [mediaData.items, kind, folderFilter]);
 
   return (
     <div>
-      <div className="media-select-row">
+      <div style={{ display: "flex", gap: "8px", marginBottom: "8px" }}>
         <select
-          value={selected || ""}
-          onChange={(e) => onSelect(e.target.value)}
+          value={folderFilter}
+          onChange={(e) => setFolderFilter(e.target.value)}
+          style={{ width: "200px", fontSize: "12px" }}
         >
-          <option value="">-- Chọn file từ thư mục media ({filtered.length} file) --</option>
-          {filtered.map((m) => (
-            <option key={m.name} value={m.name}>
-              {m.name} ({(m.size / (1024 * 1024)).toFixed(1)} MB)
+          <option value="all">📁 Tất cả thư mục ({mediaData.items?.length || 0})</option>
+          <option value="root">📁 Gốc (Chưa phân loại)</option>
+          {(mediaData.folders || []).map((f) => (
+            <option key={f.path} value={f.path}>
+              📁 {f.name} ({f.count})
             </option>
           ))}
         </select>
-        <button
-          type="button"
-          className="icon-button"
-          onClick={fetchMedia}
-          title="Làm mới danh sách media"
-        >
-          <RefreshCw className={loading ? "spin" : ""} />
-        </button>
+
+        <div className="media-select-row" style={{ flex: 1, marginBottom: 0 }}>
+          <select
+            value={selected || ""}
+            onChange={(e) => onSelect(e.target.value)}
+          >
+            <option value="">-- Chọn file ({filtered.length} file) --</option>
+            {filtered.map((m) => (
+              <option key={m.relPath} value={m.relPath}>
+                {m.name} ({(m.size / (1024 * 1024)).toFixed(1)} MB) {m.folderPath ? `[📁 ${m.folderPath}]` : ""}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="icon-button"
+            onClick={fetchMedia}
+            title="Làm mới danh sách media"
+          >
+            <RefreshCw className={loading ? "spin" : ""} />
+          </button>
+        </div>
       </div>
+
       {filtered.length > 0 && (
         <div className="media-chip-list">
           {filtered.slice(0, 6).map((m) => (
             <button
-              key={m.name}
+              key={m.relPath}
               type="button"
-              className={`media-chip ${selected === m.name ? "active" : ""}`}
-              onClick={() => onSelect(m.name)}
+              className={`media-chip ${selected === m.relPath ? "active" : ""}`}
+              onClick={() => onSelect(m.relPath)}
             >
               <Film /> {m.name}
             </button>
@@ -2222,7 +2545,7 @@ function ScriptModal({ script, close, submit }) {
   );
 }
 
-function JobModal({ accounts, scripts, initialAccount, initialAccountIds, close, submit }) {
+function JobModal({ accounts, scripts, initialAccount, initialAccountIds, initialVideoUrl, initialKind, close, submit }) {
   const enabled = accounts.filter((a) => a.enabled);
   const defaultAccountIds =
     initialAccountIds && initialAccountIds.length > 0
@@ -2234,10 +2557,10 @@ function JobModal({ accounts, scripts, initialAccount, initialAccountIds, close,
       : [];
   const [form, setForm] = useState({
     accountIds: defaultAccountIds,
-    mode: scripts.some((s) => s.enabled) ? "script" : "direct",
+    mode: initialVideoUrl ? "direct" : scripts.some((s) => s.enabled) ? "script" : "direct",
     scriptId: scripts.find((s) => s.enabled)?.id || "",
-    kind: "post_reel",
-    videoUrl: "",
+    kind: initialKind || "post_reel",
+    videoUrl: initialVideoUrl || "",
     caption: "",
     hashtags: "#reels #xuhuong",
     pageId: "",
@@ -2667,6 +2990,141 @@ function ModalActions({ close, disabled, label = "Lưu thay đổi" }) {
       <button type="button" className="secondary" onClick={close}>Hủy</button>
       <button className="primary" disabled={disabled}>{label}</button>
     </div>
+  );
+}
+
+function CreateFolderModal({ close, onDone, notify }) {
+  const [name, setName] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const handleCreate = async (e) => {
+    e.preventDefault();
+    if (!name.trim()) return;
+    setSaving(true);
+    try {
+      await endpoints.createFolder(name.trim());
+      notify(`Đã tạo thư mục: ${name.trim()}`);
+      close();
+      onDone?.();
+    } catch (err) {
+      notify(err.message || "Không thể tạo thư mục", "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title="Tạo thư mục video mới" subtitle="Phân loại video theo chủ đề hoặc từng dàn Fanpage" onClose={close}>
+      <form onSubmit={handleCreate}>
+        <Field label="Tên thư mục">
+          <input
+            required
+            autoFocus
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Ví dụ: Video_Kem_Body, Tin_Tuc_Mien_Tay, Reels_Giai_Tri..."
+          />
+        </Field>
+        <ModalActions close={close} disabled={!name.trim() || saving} label={saving ? "Đang tạo..." : "Tạo thư mục"} />
+      </form>
+    </Modal>
+  );
+}
+
+function UploadMediaModal({ folders = [], activeFolder, close, onDone, notify }) {
+  const [selectedFolder, setSelectedFolder] = useState(activeFolder !== "all" && activeFolder !== "root" ? activeFolder : "");
+  const [file, setFile] = useState(null);
+  const [uploading, setUploading] = useState(false);
+
+  const handleUpload = async (e) => {
+    e.preventDefault();
+    if (!file) return;
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("folder", selectedFolder);
+      await endpoints.uploadMedia(formData);
+      notify(`Đã tải lên thành công: ${file.name}`);
+      close();
+      onDone?.();
+    } catch (err) {
+      notify(err.message || "Lỗi khi tải lên file", "error");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  return (
+    <Modal title="Tải Video hoặc Ảnh lên thư viện" subtitle="File sẽ được lưu trữ cục bộ trên máy chủ" onClose={close}>
+      <form onSubmit={handleUpload}>
+        <Field label="Lưu vào thư mục">
+          <select value={selectedFolder} onChange={(e) => setSelectedFolder(e.target.value)}>
+            <option value="">-- Thư mục gốc (Chưa phân loại) --</option>
+            {folders.map((f) => (
+              <option key={f.path} value={f.path}>
+                📁 {f.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+
+        <Field label="Chọn file video / ảnh từ máy tính (.mp4, .mov, .jpg, .png)">
+          <div className="dropzone-box" onClick={() => document.getElementById("file-upload-input")?.click()}>
+            <div className="dropzone-icon">
+              <Film />
+            </div>
+            <b>{file ? file.name : "Nhấp để chọn file hoặc kéo thả vào đây"}</b>
+            <p style={{ fontSize: "11px", color: "var(--muted)", marginTop: "4px" }}>
+              {file ? `Dung lượng: ${(file.size / (1024 * 1024)).toFixed(2)} MB` : "Hỗ trợ định dạng video MP4, MOV, MKV và ảnh JPEG, PNG"}
+            </p>
+            <input
+              id="file-upload-input"
+              type="file"
+              accept="video/*,image/*"
+              style={{ display: "none" }}
+              onChange={(e) => e.target.files?.[0] && setFile(e.target.files[0])}
+            />
+          </div>
+        </Field>
+
+        <ModalActions close={close} disabled={!file || uploading} label={uploading ? "Đang tải lên..." : "Tải lên thư viện"} />
+      </form>
+    </Modal>
+  );
+}
+
+function VideoPreviewModal({ item, close, setModal }) {
+  if (!item) return null;
+  return (
+    <Modal title={`Xem trước: ${item.name}`} subtitle={`Dung lượng: ${(item.size / (1024 * 1024)).toFixed(1)} MB · Thư mục: ${item.folder || "Gốc"}`} onClose={close}>
+      <div style={{ textAlign: "center" }}>
+        {item.kind === "video" ? (
+          <video src={item.url} controls autoPlay className="video-modal-player" />
+        ) : (
+          <img src={item.url} alt={item.name} style={{ maxWidth: "100%", maxHeight: "450px", borderRadius: "12px", objectFit: "contain", marginBottom: "16px" }} />
+        )}
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: "10px" }}>
+        <button type="button" className="secondary" onClick={close}>
+          Đóng
+        </button>
+        <button
+          type="button"
+          className="primary"
+          onClick={() => {
+            close();
+            setModal({
+              type: "job",
+              initialVideoUrl: item.relPath,
+              initialKind: item.kind === "video" ? "post_reel" : "post_photos",
+            });
+          }}
+        >
+          <Plus /> Đăng ngay bài này
+        </button>
+      </div>
+    </Modal>
   );
 }
 

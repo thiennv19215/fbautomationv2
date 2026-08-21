@@ -1,26 +1,8 @@
-"""FBEM bridge — local Facebook native-composer upload bridge to a Chrome extension.
+"""FBEM bridge - local Facebook native-composer upload bridge to a Chrome extension.
 
 It bridges a Chrome MV3 extension over WebSocket (:9224) + HTTP callback (:47102)
-and drives **native Facebook Reel / Photo uploads** that fire the same internal
-web API the logged-in user's browser uses (NOT the Graph API), plus a **crawler**
-that records the genuine native upload requests when the user manually posts — so
-the replay is template-driven and self-healing.
-
-What it exposes (all on 127.0.0.1):
-  GET  /api/health         — bridge status (extension connected? templates?)
-  POST /post-reel          — { videoUrl, caption, pageId? } → { ok, videoId, permalinkUrl }
-  POST /post-photos        — { imageUrls[], caption, pageId? } → { ok, postId, photoIds, permalinkUrl }
-  POST /switch-profile     — { targetId } → switch the acting page/profile
-  GET  /api/current-identity — page/profile the tab currently posts AS
-  POST /api/ext/callback   — extension POSTs responses here (secret-gated)
-  POST /api/ext/capture    — extension POSTs recorded native requests here (secret-gated)
-  GET  /api/template       — current captured template.json (debug)
-
-Run:
-  fbem-bridge            # or: python -m fbem.bridge
-Then load the Chrome extension (extension/) and open a logged-in facebook.com tab.
-
-This is a LOCAL CONTENT TOOL — loopback-only, never network-reachable.
+and drives native Facebook Reel / Photo uploads that fire the same internal
+web API the logged-in user's browser uses (NOT the Graph API).
 """
 from __future__ import annotations
 
@@ -28,19 +10,19 @@ import asyncio
 import hmac
 import logging
 import os
+import shutil
 import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
 from pathlib import Path
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, File, UploadFile, Form
 from fastapi import Request as FastAPIRequest
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
-
 from . import capture_store
 from .config import WS_HOST, media_dir
 from .bridge_client import bridge_client
@@ -49,6 +31,12 @@ from .ws_server import run_ws_server
 from .job_runner import run_dispatcher
 from . import admin_store
 from .text_utils import normalize_browser_text
+
+class CreateFolderBody(BaseModel):
+    name: str
+
+class DeleteMediaBody(BaseModel):
+    path: str
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("fbem.bridge")
@@ -401,6 +389,30 @@ def health() -> dict:
     }
 
 
+def _safe_resolve_media(rel_name: str) -> Path | None:
+    """Safely resolve a relative media path within _VIDEO_DIR or workspace media/."""
+    if not rel_name:
+        return None
+    clean = rel_name.strip().replace("\\", "/").lstrip("/")
+    base_v = _VIDEO_DIR.resolve()
+    try:
+        p1 = (base_v / clean).resolve()
+        if str(p1).startswith(str(base_v)) and p1.is_file():
+            return p1
+    except Exception:
+        pass
+
+    base_w = Path("media").resolve()
+    if base_w.is_dir():
+        try:
+            p2 = (base_w / clean).resolve()
+            if str(p2).startswith(str(base_w)) and p2.is_file():
+                return p2
+        except Exception:
+            pass
+    return None
+
+
 def cleanup_media_file(url_or_path: str) -> None:
     """Delete a media file from media dirs once scheduled or posted successfully."""
     try:
@@ -410,18 +422,13 @@ def cleanup_media_file(url_or_path: str) -> None:
             qs = parse_qs(urlparse(url_or_path).query)
             filename = qs.get("name", [None])[0]
         if not filename:
-            filename = Path(url_or_path).name
+            filename = url_or_path.replace("http://127.0.0.1:47102/local-video?name=", "").replace("http://127.0.0.1:47102/local-image?name=", "")
 
-        if filename:
-            p1 = _VIDEO_DIR / filename
-            if p1.is_file():
-                p1.unlink(missing_ok=True)
-                logger.info("Deleted posted media file from media_dir: %s", p1)
-
-            p2 = Path("media").resolve() / filename
-            if p2.is_file():
-                p2.unlink(missing_ok=True)
-                logger.info("Deleted posted media file from workspace media: %s", p2)
+        p = _safe_resolve_media(filename)
+        if p and p.is_file():
+            p.unlink(missing_ok=True)
+            logger.info("Deleted posted media file: %s", p)
+            return
 
         p3 = Path(url_or_path).expanduser().resolve()
         if p3.is_file():
@@ -653,24 +660,23 @@ _IMAGE_DIR = media_dir()
 
 @app.get("/local-video")
 def local_video(name: str) -> FileResponse:
-    """Serve a locally-rendered mp4 to the extension over loopback, so the
-    page-context fetch avoids cross-origin CORS. Basename-only (no traversal);
-    .mp4 only; restricted to the FBEM media dir."""
-    p = _VIDEO_DIR / Path(name).name
-    if p.suffix.lower() != ".mp4" or not p.is_file():
+    """Serve a locally-rendered video to the extension or frontend preview over loopback.
+    Supports files in root media_dir or subfolders."""
+    p = _safe_resolve_media(name)
+    if not p or p.suffix.lower() not in {".mp4", ".mov", ".mkv", ".webm"}:
         raise HTTPException(status_code=404, detail="not_found")
     return FileResponse(str(p), media_type="video/mp4")
 
 
-_IMAGE_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}
+_IMAGE_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
 
 
 @app.get("/local-image")
 def local_image(name: str) -> FileResponse:
-    """Serve a locally-rendered image to the extension over loopback, so the
-    page-context fetch avoids cross-origin CORS. Basename-only (no traversal);
-    jpg/png only; restricted to the FBEM media dir."""
-    p = _IMAGE_DIR / Path(name).name
+    """Serve a locally-rendered image to the extension or frontend over loopback."""
+    p = _safe_resolve_media(name)
+    if not p:
+        raise HTTPException(status_code=404, detail="not_found")
     media = _IMAGE_TYPES.get(p.suffix.lower())
     if not media or not p.is_file():
         raise HTTPException(status_code=404, detail="not_found")
@@ -689,24 +695,149 @@ def get_template(extensionId: str | None = None) -> dict:
 
 @app.get("/api/media")
 def list_media() -> dict:
-    """List available media files in media directories."""
+    """List all folders and media files (videos, images) recursively."""
+    base_dir = _VIDEO_DIR.resolve()
+    base_dir.mkdir(parents=True, exist_ok=True)
+    
+    folders_map: dict[str, dict] = {}
     items = []
     seen = set()
-    dirs_to_check = [_VIDEO_DIR, Path("media").resolve()]
-    for d in dirs_to_check:
-        if d.is_dir():
+
+    def scan_dir(d: Path, rel_prefix: str = ""):
+        if not d.is_dir():
+            return
+        for entry in d.iterdir():
             try:
-                for p in d.iterdir():
-                    if p.is_file() and p.name not in seen:
-                        ext = p.suffix.lower()
-                        if ext in {".mp4", ".mov", ".mkv", ".jpg", ".jpeg", ".png"}:
-                            seen.add(p.name)
-                            items.append({
-                                "name": p.name,
-                                "path": str(p),
-                                "size": p.stat().st_size,
-                                "kind": "video" if ext in {".mp4", ".mov", ".mkv"} else "photo",
-                            })
-            except Exception as e:
-                logger.warning(f"Error reading media dir {d}: {e}")
-    return {"items": sorted(items, key=lambda x: x["name"])}
+                if entry.is_dir() and not entry.name.startswith("."):
+                    sub_rel = f"{rel_prefix}/{entry.name}".strip("/")
+                    if sub_rel not in folders_map:
+                        folders_map[sub_rel] = {
+                            "name": entry.name,
+                            "path": sub_rel,
+                            "count": 0,
+                            "size": 0,
+                        }
+                    scan_dir(entry, sub_rel)
+                elif entry.is_file() and not entry.name.startswith("."):
+                    ext = entry.suffix.lower()
+                    if ext in {".mp4", ".mov", ".mkv", ".webm", ".jpg", ".jpeg", ".png", ".webp"}:
+                        rel_path = f"{rel_prefix}/{entry.name}".strip("/")
+                        if rel_path in seen:
+                            continue
+                        seen.add(rel_path)
+                        st = entry.stat()
+                        size = st.st_size
+                        mtime = int(st.st_mtime)
+                        folder_name = rel_prefix if rel_prefix else "Gốc (Chưa phân loại)"
+                        kind = "video" if ext in {".mp4", ".mov", ".mkv", ".webm"} else "photo"
+                        url = f"http://127.0.0.1:47102/{'local-video' if kind == 'video' else 'local-image'}?name={rel_path}"
+                        
+                        if rel_prefix and rel_prefix in folders_map:
+                            folders_map[rel_prefix]["count"] += 1
+                            folders_map[rel_prefix]["size"] += size
+
+                        items.append({
+                            "name": entry.name,
+                            "folder": folder_name,
+                            "folderPath": rel_prefix,
+                            "relPath": rel_path,
+                            "url": url,
+                            "size": size,
+                            "kind": kind,
+                            "modifiedAt": mtime,
+                        })
+            except Exception as ex:
+                logger.warning("Error scanning entry %s: %s", entry, ex)
+
+    scan_dir(base_dir)
+    # Also check workspace media/ if distinct
+    ws_media = Path("media").resolve()
+    if ws_media != base_dir and ws_media.is_dir():
+        scan_dir(ws_media)
+
+    folders_list = sorted(list(folders_map.values()), key=lambda x: x["path"])
+    sorted_items = sorted(items, key=lambda x: x.get("modifiedAt", 0), reverse=True)
+    return {
+        "ok": True,
+        "baseDir": str(base_dir),
+        "folders": folders_list,
+        "items": sorted_items,
+        "totalFiles": len(sorted_items),
+        "totalSize": sum(x["size"] for x in sorted_items),
+    }
+
+
+@app.post("/api/media/folders")
+def create_media_folder(body: CreateFolderBody) -> dict:
+    """Create a new media folder/subdirectory."""
+    folder_name = body.name.strip().strip("/\\").replace("..", "")
+    if not folder_name:
+        raise HTTPException(status_code=400, detail="folder_name_required")
+    target_dir = (_VIDEO_DIR / folder_name).resolve()
+    if not str(target_dir).startswith(str(_VIDEO_DIR.resolve())):
+        raise HTTPException(status_code=400, detail="invalid_folder_name")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    return {"ok": True, "name": folder_name, "path": str(target_dir)}
+
+
+@app.delete("/api/media/folders")
+def delete_media_folder(path: str) -> dict:
+    """Delete a media folder."""
+    clean = path.strip().strip("/\\").replace("..", "")
+    if not clean:
+        raise HTTPException(status_code=400, detail="folder_path_required")
+    target_dir = (_VIDEO_DIR / clean).resolve()
+    if not str(target_dir).startswith(str(_VIDEO_DIR.resolve())) or not target_dir.is_dir():
+        raise HTTPException(status_code=404, detail="folder_not_found")
+    try:
+        shutil.rmtree(target_dir)
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/media/upload")
+async def upload_media_file(
+    file: UploadFile = File(...),
+    folder: str = Form(""),
+) -> dict:
+    """Upload a video or photo file directly into media library / folder."""
+    clean_folder = folder.strip().strip("/\\").replace("..", "")
+    target_dir = (_VIDEO_DIR / clean_folder).resolve() if clean_folder else _VIDEO_DIR.resolve()
+    if not str(target_dir).startswith(str(_VIDEO_DIR.resolve())):
+        raise HTTPException(status_code=400, detail="invalid_target_folder")
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = Path(file.filename or "media_upload").name
+    dest_path = target_dir / filename
+    
+    with open(dest_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    rel_path = f"{clean_folder}/{filename}".strip("/")
+    ext = dest_path.suffix.lower()
+    kind = "video" if ext in {".mp4", ".mov", ".mkv", ".webm"} else "photo"
+    url = f"http://127.0.0.1:47102/{'local-video' if kind == 'video' else 'local-image'}?name={rel_path}"
+
+    return {
+        "ok": True,
+        "name": filename,
+        "folder": clean_folder,
+        "relPath": rel_path,
+        "url": url,
+        "size": dest_path.stat().st_size,
+        "kind": kind,
+    }
+
+
+@app.delete("/api/media/files")
+def delete_media_file(path: str) -> dict:
+    """Delete a single media file."""
+    p = _safe_resolve_media(path)
+    if not p or not p.is_file():
+        raise HTTPException(status_code=404, detail="file_not_found")
+    try:
+        p.unlink(missing_ok=True)
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

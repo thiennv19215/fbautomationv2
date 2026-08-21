@@ -28,4 +28,13 @@ export const endpoints = {
   extensionIdentity: (id) => api(`/api/extensions/${encodeURIComponent(id)}/identity`),
   scanPages: (extensionId) => api("/api/scan-pages", { method: "POST", body: JSON.stringify({ extensionId }) }),
   media: () => api("/api/media"),
+  createFolder: (name) => api("/api/media/folders", { method: "POST", body: JSON.stringify({ name }) }),
+  deleteFolder: (path) => api(`/api/media/folders?path=${encodeURIComponent(path)}`, { method: "DELETE" }),
+  uploadMedia: async (formData) => {
+    const res = await fetch("/api/media/upload", { method: "POST", body: formData });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `Upload thất bại (${res.status})`);
+    return data;
+  },
+  deleteMedia: (path) => api(`/api/media/files?path=${encodeURIComponent(path)}`, { method: "DELETE" }),
 };

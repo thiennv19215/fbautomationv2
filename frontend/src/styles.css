@@ -1665,6 +1665,7 @@ tbody tr:hover {
   .stats-grid { grid-template-columns: 1fr 1fr; }
   .overview-grid { grid-template-columns: 1fr; }
   .extension-grid { grid-template-columns: 1fr 1fr; }
+  .media-library-grid { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
 }
 
 @media (max-width: 768px) {
@@ -1680,4 +1681,226 @@ tbody tr:hover {
   .page-toolbar { flex-direction: column; align-items: flex-start; gap: 14px; }
   .toolbar-actions { width: 100%; }
   .search { width: 100%; }
+  .media-library-grid { grid-template-columns: 1fr; }
 }
+
+/* ─── Media Library & Folders ───────────────────────────── */
+.folder-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 12px;
+  margin-bottom: 18px;
+}
+
+.folder-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 14px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+
+.folder-chip:hover {
+  border-color: #93c5fd;
+  color: #2563eb;
+  background: #f8fafc;
+}
+
+.folder-chip.active {
+  background: #eff6ff;
+  border-color: #3b82f6;
+  color: #1d4ed8;
+  font-weight: 700;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.15);
+}
+
+.folder-chip svg {
+  width: 15px;
+  height: 15px;
+}
+
+.folder-chip-delete {
+  background: none;
+  border: none;
+  color: #94a3b8;
+  padding: 0 2px;
+  margin-left: 4px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.folder-chip-delete:hover {
+  color: #e11d48;
+}
+
+.media-library-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 18px;
+}
+
+.media-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transition: all 0.2s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
+}
+
+.media-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06);
+  border-color: #cbd5e1;
+}
+
+.media-thumb-box {
+  height: 150px;
+  background: #0f172a;
+  position: relative;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.media-thumb-box video,
+.media-thumb-box img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.media-play-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.media-thumb-box:hover .media-play-overlay {
+  opacity: 1;
+}
+
+.media-play-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: #ffffff;
+  color: #0f172a;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+}
+
+.media-kind-badge {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  background: rgba(15, 23, 42, 0.75);
+  color: #ffffff;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  backdrop-filter: blur(4px);
+}
+
+.media-folder-badge {
+  position: absolute;
+  bottom: 10px;
+  left: 10px;
+  background: rgba(37, 99, 235, 0.85);
+  color: #ffffff;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  backdrop-filter: blur(4px);
+}
+
+.media-content {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.media-filename {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+  margin-bottom: 6px;
+  word-break: break-all;
+  line-height: 1.4;
+}
+
+.media-meta-row {
+  font-size: 11px;
+  color: var(--muted);
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.media-card-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.dropzone-box {
+  border: 2px dashed #93c5fd;
+  background: #f8fafc;
+  border-radius: 14px;
+  padding: 36px 20px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.dropzone-box:hover, .dropzone-box.dragover {
+  background: #eff6ff;
+  border-color: #2563eb;
+}
+
+.dropzone-icon {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: #dbeafe;
+  color: #2563eb;
+  display: grid;
+  place-items: center;
+  margin: 0 auto 12px;
+}
+
+.video-modal-player {
+  width: 100%;
+  max-height: 480px;
+  background: #000000;
+  border-radius: 12px;
+  margin-bottom: 16px;
+}
+
