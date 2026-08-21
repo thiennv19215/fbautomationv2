@@ -37,13 +37,18 @@ from pathlib import Path
 from fastapi import FastAPI, Header, HTTPException
 from fastapi import Request as FastAPIRequest
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from pydantic import BaseModel, field_validator
+from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field, field_validator
 
 from . import capture_store
 from .config import WS_HOST, media_dir
 from .bridge_client import bridge_client
+from .connection_registry import connection_registry, ExtensionSession
 from .ws_server import run_ws_server
+from .job_runner import run_dispatcher
+from . import admin_store
+from .text_utils import normalize_browser_text
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("fbem.bridge")
@@ -58,13 +63,19 @@ if WS_HOST not in ("127.0.0.1", "localhost", "::1"):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     ws_task = asyncio.create_task(run_ws_server(), name="ext-ws-server")
+    job_task = asyncio.create_task(run_dispatcher(), name="job-dispatcher")
     logger.info("fb-bridge started (ws:9224 + http:47102). Waiting for the Chrome extension…")
     try:
         yield
     finally:
         ws_task.cancel()
+        job_task.cancel()
         try:
             await ws_task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
+        try:
+            await job_task
         except (asyncio.CancelledError, Exception):  # noqa: BLE001
             pass
         logger.info("fb-bridge stopped")
@@ -83,12 +94,217 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+_STATIC_DIR = Path(__file__).with_name("static")
+app.mount("/ui", StaticFiles(directory=_STATIC_DIR, html=True), name="dashboard")
+
+
+@app.get("/", include_in_schema=False)
+def dashboard() -> RedirectResponse:
+    return RedirectResponse("/ui/")
+
+
+def _session(extension_id: Optional[str] = None) -> ExtensionSession:
+    session = connection_registry.get(extension_id) if extension_id else connection_registry.default()
+    if session is None:
+        detail = "extension_not_connected" if not connection_registry.list() else "extension_id_required"
+        raise HTTPException(status_code=503 if not connection_registry.list() else 409, detail=detail)
+    return session
+
+
+@app.get("/api/extensions")
+def list_extensions() -> dict:
+    return {"items": connection_registry.list()}
+
+
+class AccountBody(BaseModel):
+    name: str
+    facebookId: str
+    extensionId: str
+    enabled: bool = True
+
+
+class ScriptBody(BaseModel):
+    name: str
+    description: str = ""
+    kind: str
+    config: dict = Field(default_factory=dict)
+    enabled: bool = True
+
+
+class JobBody(BaseModel):
+    accountId: str
+    kind: str | None = None
+    input: dict = Field(default_factory=dict)
+    scriptId: str | None = None
+    idempotencyKey: str | None = None
+
+
+class BulkJobBody(BaseModel):
+    accountIds: list[str]
+    kind: str | None = None
+    input: dict = Field(default_factory=dict)
+    scriptId: str | None = None
+
+
+@app.get("/api/accounts")
+def list_accounts() -> dict:
+    online = {item["id"]: item for item in connection_registry.list()}
+    items = admin_store.list_rows("accounts")
+    for item in items:
+        item["extension"] = online.get(item["extension_id"])
+    return {"items": items}
+
+
+@app.post("/api/accounts")
+def create_account(body: AccountBody) -> dict:
+    if not body.name.strip() or not body.facebookId.strip() or not body.extensionId.strip():
+        raise HTTPException(status_code=400, detail="name, facebookId and extensionId are required")
+    return admin_store.save_account(body.model_dump())
+
+
+@app.put("/api/accounts/{account_id}")
+def update_account(account_id: str, body: AccountBody) -> dict:
+    if not admin_store.get_row("accounts", account_id):
+        raise HTTPException(status_code=404, detail="account_not_found")
+    return admin_store.save_account(body.model_dump(), account_id)
+
+
+@app.delete("/api/accounts/{account_id}")
+def delete_account(account_id: str) -> dict:
+    deleted, error = admin_store.delete_account(account_id)
+    if not deleted:
+        raise HTTPException(status_code=409 if error == "account_has_active_jobs" else 404, detail=error)
+    return {"ok": True}
+
+
+@app.get("/api/scripts")
+def list_scripts() -> dict:
+    return {"items": admin_store.list_rows("scripts")}
+
+
+@app.post("/api/scripts")
+def create_script(body: ScriptBody) -> dict:
+    if body.kind not in {"post_reel", "post_photos", "switch_profile"}:
+        raise HTTPException(status_code=400, detail="invalid_script_kind")
+    return admin_store.save_script(body.model_dump())
+
+
+@app.put("/api/scripts/{script_id}")
+def update_script(script_id: str, body: ScriptBody) -> dict:
+    if not admin_store.get_row("scripts", script_id):
+        raise HTTPException(status_code=404, detail="script_not_found")
+    return admin_store.save_script(body.model_dump(), script_id)
+
+
+@app.delete("/api/scripts/{script_id}")
+def delete_script(script_id: str) -> dict:
+    if not admin_store.delete_script(script_id):
+        raise HTTPException(status_code=404, detail="script_not_found")
+    return {"ok": True}
+
+
+@app.get("/api/jobs")
+def list_jobs() -> dict:
+    return {"items": admin_store.list_rows("jobs")}
+
+
+@app.get("/api/jobs/{job_id}")
+def get_job(job_id: str) -> dict:
+    job = admin_store.get_row("jobs", job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job_not_found")
+    return job
+
+
+@app.post("/api/jobs")
+def create_job(body: JobBody) -> dict:
+    account = admin_store.get_row("accounts", body.accountId)
+    if not account:
+        raise HTTPException(status_code=404, detail="account_not_found")
+    payload = dict(body.input)
+    kind = body.kind
+    if body.scriptId:
+        script = admin_store.get_row("scripts", body.scriptId)
+        if not script or not script.get("enabled"):
+            raise HTTPException(status_code=404, detail="script_not_found_or_disabled")
+        kind = script["kind"]
+        payload = {**(script.get("config") or {}), **payload}
+    if kind not in {"post_reel", "post_photos", "switch_profile", "get_identity"}:
+        raise HTTPException(status_code=400, detail="invalid_job_kind")
+    return admin_store.create_job(account, kind, payload, script_id=body.scriptId,
+                                  idempotency_key=body.idempotencyKey)
+
+
+@app.post("/api/jobs/bulk")
+def create_bulk_jobs(body: BulkJobBody) -> dict:
+    if not body.accountIds:
+        raise HTTPException(status_code=400, detail="accountIds_required")
+    script = admin_store.get_row("scripts", body.scriptId) if body.scriptId else None
+    if body.scriptId and (not script or not script.get("enabled")):
+        raise HTTPException(status_code=404, detail="script_not_found_or_disabled")
+    kind = script["kind"] if script else body.kind
+    if kind not in {"post_reel", "post_photos", "switch_profile", "get_identity"}:
+        raise HTTPException(status_code=400, detail="invalid_job_kind")
+    payload = {**((script or {}).get("config") or {}), **body.input}
+    jobs, errors = [], []
+    for account_id in dict.fromkeys(body.accountIds):
+        account = admin_store.get_row("accounts", account_id)
+        if not account or not account.get("enabled"):
+            errors.append({"accountId": account_id, "error": "account_not_found_or_disabled"})
+            continue
+        jobs.append(admin_store.create_job(account, kind, payload, script_id=body.scriptId))
+    return {"items": jobs, "errors": errors}
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_job(job_id: str) -> dict:
+    if not admin_store.cancel_job(job_id):
+        raise HTTPException(status_code=409, detail="job_cannot_be_cancelled")
+    return {"ok": True}
+
+
+@app.post("/api/jobs/{job_id}/retry")
+def retry_job(job_id: str) -> dict:
+    if not admin_store.retry_job(job_id):
+        raise HTTPException(status_code=409, detail="job_cannot_be_retried")
+    return admin_store.get_row("jobs", job_id) or {"ok": True}
+
+
+@app.get("/api/dashboard")
+def dashboard_summary() -> dict:
+    return {**admin_store.dashboard_stats(), "extensions": len(connection_registry.list())}
+
+
+@app.get("/api/extensions/{extension_id}/template-status")
+def extension_template_status(extension_id: str) -> dict:
+    template = capture_store.load_template(extension_id) or {}
+    stats = capture_store.capture_stats(extension_id)
+    return {
+        "extensionId": extension_id,
+        "reel": capture_store.template_complete(template),
+        "photo": capture_store.photo_template_complete(template),
+        "switchProfile": bool((template.get("graphql_ops") or {}).get("CometProfileSwitchMutation")),
+        "updatedAt": template.get("updatedAt"),
+        "capture": stats,
+    }
+
+
+@app.get("/api/extensions/{extension_id}/identity")
+async def extension_identity(extension_id: str) -> dict:
+    session = _session(extension_id)
+    response = await session.send("get_identity", {}, timeout=15.0)
+    if response.get("error"):
+        raise HTTPException(status_code=502, detail=str(response["error"])[:300])
+    data = normalize_browser_text(response.get("data") or {})
+    return {"id": data.get("identityId"), "name": data.get("identityName")}
+
 
 class PostReelBody(BaseModel):
     videoUrl: str
     caption: str
     pageId: Optional[str] = None
     scheduledPublishTime: int | None = None
+    extensionId: str | None = None
 
     @field_validator("scheduledPublishTime")
     @classmethod
@@ -108,6 +324,7 @@ class PostPhotosBody(BaseModel):
     caption: str
     pageId: Optional[str] = None
     scheduledPublishTime: int | None = None
+    extensionId: str | None = None
 
     @field_validator("scheduledPublishTime")
     @classmethod
@@ -123,6 +340,7 @@ class PostPhotosBody(BaseModel):
 
 class SwitchProfileBody(BaseModel):
     targetId: str
+    extensionId: str | None = None
 
 
 # How long a tab stays "fresh" before it should be reloaded. The extension
@@ -147,16 +365,23 @@ def _ttl_block(last_active_at: Optional[float]) -> dict:
 
 @app.get("/api/health")
 def health() -> dict:
-    tpl = capture_store.load_template()
-    capture = capture_store.capture_stats()
+    default_session = connection_registry.default()
+    scope = default_session.extension_id if default_session else None
+    tpl = capture_store.load_template(scope)
+    capture = capture_store.capture_stats(scope)
     # Anchor freshness to the most recent of: explicit reload/connect, or a real
     # captured request (any tab activity keeps it fresh).
-    actives = [t for t in (bridge_client.last_active_at, capture["last_capture_at"]) if t]
+    extension_items = connection_registry.list()
+    actives = [item["lastActiveAt"] for item in extension_items]
+    if capture["last_capture_at"]:
+        actives.append(capture["last_capture_at"])
     ttl = _ttl_block(max(actives) if actives else None)
     return {
         "ok": True,
-        "extension_connected": bridge_client.connected,
-        "fb_user": bridge_client.fb_user,
+        "extension_connected": bool(extension_items),
+        "extension_count": len(extension_items),
+        "extensions": extension_items,
+        "fb_user": default_session.fb_user if default_session else None,
         # Proof the extension is live on a logged-in FB tab: it streams captured
         # requests as soon as the tab (re)loads. tab_active flips true on reload.
         "tab_active": capture["tab_active"],
@@ -170,7 +395,7 @@ def health() -> dict:
         "has_template": capture_store.template_complete(tpl),
         "has_photo_template": capture_store.photo_template_complete(tpl),
         "capture": capture,
-        "ws_stats": bridge_client.ws_stats,
+        "ws_stats": {"connected": len(extension_items), "pending": sum(x["pending"] for x in extension_items)},
     }
 
 
@@ -290,18 +515,20 @@ async def current_identity() -> dict:
     if resp.get("error"):
         raise HTTPException(status_code=502, detail=str(resp["error"])[:300])
     data = resp.get("data") or {}
-    return {"id": data.get("identityId"), "name": data.get("identityName")}
+    return normalize_browser_text({"id": data.get("identityId"), "name": data.get("identityName")})
 
 
 @app.post("/api/ext/callback")
 async def ext_callback(
     body: FastAPIRequest,
     x_callback_secret: str | None = Header(default=None, alias="X-Callback-Secret"),
+    x_extension_id: str | None = Header(default=None, alias="X-Extension-Id"),
 ) -> dict:
     """The extension POSTs its responses here, secret-gated."""
-    if not x_callback_secret or not hmac.compare_digest(
-        x_callback_secret, bridge_client.callback_secret
-    ):
+    session = connection_registry.get(x_extension_id or "") or (
+        connection_registry.by_secret(x_callback_secret or "") if x_callback_secret else None
+    )
+    if not session or not x_callback_secret or not hmac.compare_digest(x_callback_secret, session.callback_secret):
         raise HTTPException(status_code=401, detail="invalid callback secret")
     try:
         payload = await body.json()
@@ -309,18 +536,23 @@ async def ext_callback(
         raise HTTPException(status_code=400, detail="invalid json body")
     if not isinstance(payload, dict) or "id" not in payload:
         raise HTTPException(status_code=400, detail="missing id")
-    return {"ok": bridge_client.resolve_callback(payload)}
+    resolved = session.resolve(payload)
+    if not resolved:
+        resolved = bridge_client.resolve_callback(payload)
+    return {"ok": resolved}
 
 
 @app.post("/api/ext/capture")
 async def ext_capture(
     body: FastAPIRequest,
     x_callback_secret: str | None = Header(default=None, alias="X-Callback-Secret"),
+    x_extension_id: str | None = Header(default=None, alias="X-Extension-Id"),
 ) -> dict:
     """The crawler POSTs recorded native upload requests here, secret-gated."""
-    if not x_callback_secret or not hmac.compare_digest(
-        x_callback_secret, bridge_client.callback_secret
-    ):
+    session = connection_registry.get(x_extension_id or "") or (
+        connection_registry.by_secret(x_callback_secret or "") if x_callback_secret else None
+    )
+    if not session or not x_callback_secret or not hmac.compare_digest(x_callback_secret, session.callback_secret):
         raise HTTPException(status_code=401, detail="invalid callback secret")
     try:
         payload = await body.json()
@@ -328,7 +560,11 @@ async def ext_capture(
         raise HTTPException(status_code=400, detail="invalid json body")
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="capture body must be an object")
-    await asyncio.to_thread(capture_store.save_capture, payload)
+    await asyncio.to_thread(capture_store.save_capture, payload, session.extension_id)
+    # Keep the original single-extension template path working for existing MCP
+    # clients. Multi-account dashboard jobs never read this compatibility copy.
+    if len(connection_registry.list()) == 1:
+        await asyncio.to_thread(capture_store.save_capture, payload)
     return {"ok": True}
 
 
@@ -366,6 +602,10 @@ def local_image(name: str) -> FileResponse:
 
 
 @app.get("/api/template")
-def get_template() -> dict:
+def get_template(extensionId: str | None = None) -> dict:
     """Return the current captured template (debug). Empty object if none yet."""
-    return capture_store.load_template() or {}
+    scope = extensionId
+    if not scope:
+        default = connection_registry.default()
+        scope = default.extension_id if default else None
+    return capture_store.load_template(scope) or {}

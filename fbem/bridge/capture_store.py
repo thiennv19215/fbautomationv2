@@ -30,7 +30,7 @@ from .config import captures_dir
 logger = logging.getLogger(__name__)
 
 _CAPTURES_DIR = captures_dir()
-_TEMPLATE_PATH = _CAPTURES_DIR / "template.json"
+_TEMPLATE_PATH = _CAPTURES_DIR / "template.json"  # legacy/default scope
 
 # Live capture activity — proof the extension is attached to a logged-in
 # facebook.com tab and actively observing it (updates on every captured request,
@@ -39,6 +39,20 @@ _TEMPLATE_PATH = _CAPTURES_DIR / "template.json"
 _last_capture_at: Optional[float] = None
 _capture_count: int = 0
 _last_capture_url: Optional[str] = None
+_scope_stats: dict[str, dict[str, Any]] = {}
+
+
+def _safe_scope(scope: Optional[str]) -> str:
+    value = str(scope or "legacy")
+    return re.sub(r"[^a-zA-Z0-9_.-]", "_", value)[:120] or "legacy"
+
+
+def _scope_dir(scope: Optional[str]) -> Any:
+    return _CAPTURES_DIR if not scope or scope == "legacy" else _CAPTURES_DIR / _safe_scope(scope)
+
+
+def _template_path(scope: Optional[str]) -> Any:
+    return _scope_dir(scope) / "template.json"
 
 # Which graphql op is the actual Reel publish. During reel creation FB fires
 # dozens of graphql ops (typeaheads, queries); only ONE publishes the post, so
@@ -53,8 +67,8 @@ _PUBLISH_OP_RE = re.compile(
 )
 
 
-def _ensure_dir() -> None:
-    _CAPTURES_DIR.mkdir(parents=True, exist_ok=True)
+def _ensure_dir(scope: Optional[str] = None) -> None:
+    _scope_dir(scope).mkdir(parents=True, exist_ok=True)
 
 
 def _publish_attachment_kind(payload: dict) -> Optional[str]:
@@ -92,11 +106,13 @@ def _publish_attachment_kind(payload: dict) -> Optional[str]:
         return None
 
 
-def save_capture(payload: dict) -> None:
+def save_capture(payload: dict, scope: Optional[str] = None) -> None:
     """Append a recorded native request to the captures dir and fold its kind
     into template.json. ``payload['kind']`` selects the template slot
     (defaults to "unknown" so nothing is silently dropped)."""
-    _ensure_dir()
+    _ensure_dir(scope)
+    target_dir = _scope_dir(scope)
+    target_template = _template_path(scope)
     kind = payload.get("kind") or "unknown"
     ts = int(time.time())
 
@@ -106,28 +122,35 @@ def save_capture(payload: dict) -> None:
     _capture_count += 1
     if payload.get("url"):
         _last_capture_url = str(payload["url"])[:200]
+    scope_key = _safe_scope(scope)
+    scoped = _scope_stats.setdefault(scope_key, {"captures": 0})
+    scoped.update({
+        "captures": int(scoped.get("captures", 0)) + 1,
+        "last_capture_at": _last_capture_at,
+        "last_capture_url": _last_capture_url,
+    })
 
     # Comprehensive trace: one request+response per line, for OFFLINE analysis.
     # Kept out of the per-file/template machinery so a full session is one stream.
     if kind == "trace":
         rec = dict(payload)
         rec["ts"] = ts
-        with (_CAPTURES_DIR / "trace.jsonl").open("a", encoding="utf-8") as fh:
+        with (target_dir / "trace.jsonl").open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
         logger.info("trace %s %s -> %s", payload.get("method"), payload.get("respStatus"), (payload.get("url") or "")[:70])
         return
 
-    capture_path = _CAPTURES_DIR / f"{ts}-{kind}.json"
+    capture_path = target_dir / f"{ts}-{kind}.json"
     # Guard against collisions when two captures of the same kind land in the
     # same second.
     suffix = 0
     while capture_path.exists():
         suffix += 1
-        capture_path = _CAPTURES_DIR / f"{ts}-{kind}-{suffix}.json"
+        capture_path = target_dir / f"{ts}-{kind}-{suffix}.json"
     capture_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     logger.info("saved capture %s", capture_path.name)
 
-    template = load_template() or {}
+    template = load_template(scope) or {}
     template["updatedAt"] = ts
 
     if kind == "graphql":
@@ -208,9 +231,9 @@ def save_capture(payload: dict) -> None:
     # Atomic write (temp + os.replace) so a crash or interleaved write mid-flight
     # can't leave a truncated template.json that load_template would silently treat
     # as "no template captured".
-    tmp = _TEMPLATE_PATH.with_suffix(".json.tmp")
+    tmp = target_template.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(template, indent=2), encoding="utf-8")
-    os.replace(tmp, _TEMPLATE_PATH)
+    os.replace(tmp, target_template)
 
 
 def template_complete(t: Optional[dict]) -> bool:
@@ -228,29 +251,32 @@ def photo_template_complete(t: Optional[dict]) -> bool:
     return bool(t) and bool(t.get("graphql_photo"))
 
 
-def capture_stats() -> dict:
+def capture_stats(scope: Optional[str] = None) -> dict:
     """Live capture activity — proof the extension is on a logged-in FB tab and
     actively observing it. ``tab_active`` is True when a capture arrived recently
     (default 90s window, FBEM_TAB_ACTIVE_WINDOW_S to tune)."""
     window = float(os.getenv("FBEM_TAB_ACTIVE_WINDOW_S", "90"))
-    seconds_since = (
-        int(time.time() - _last_capture_at) if _last_capture_at is not None else None
-    )
+    scoped = _scope_stats.get(_safe_scope(scope)) if scope else None
+    last_at = scoped.get("last_capture_at") if scoped else _last_capture_at
+    count = scoped.get("captures", 0) if scoped else _capture_count
+    last_url = scoped.get("last_capture_url") if scoped else _last_capture_url
+    seconds_since = int(time.time() - last_at) if last_at is not None else None
     return {
-        "captures": _capture_count,
-        "last_capture_at": int(_last_capture_at) if _last_capture_at is not None else None,
+        "captures": count,
+        "last_capture_at": int(last_at) if last_at is not None else None,
         "seconds_since_capture": seconds_since,
-        "last_capture_url": _last_capture_url,
+        "last_capture_url": last_url,
         "tab_active": seconds_since is not None and seconds_since <= window,
     }
 
 
-def load_template() -> Optional[dict]:
+def load_template(scope: Optional[str] = None) -> Optional[dict]:
     """Return the current template.json contents, or None if not captured yet."""
-    if not _TEMPLATE_PATH.exists():
+    path = _template_path(scope)
+    if not path.exists():
         return None
     try:
-        data: Any = json.loads(_TEMPLATE_PATH.read_text(encoding="utf-8"))
+        data: Any = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
         logger.warning("failed to read template.json: %s", exc)
         return None

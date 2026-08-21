@@ -24,6 +24,7 @@ let ws               = null;
 let callbackSecret   = null; // Auth secret received from agent on WS connect
 let manualDisconnect = false;
 let postInFlight     = 0;    // active post/switch count; pauses the periodic tab reload
+let extensionId      = null; // stable per Chrome extension installation/profile
 
 // ─── Facebook tab matchers ──────────────────────────────────
 
@@ -69,8 +70,10 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 async function init() {
-  const data = await chrome.storage.local.get(['callbackSecret']);
+  const data = await chrome.storage.local.get(['callbackSecret', 'extensionId']);
   if (data.callbackSecret) callbackSecret = data.callbackSecret;
+  extensionId = data.extensionId || crypto.randomUUID();
+  if (!data.extensionId) await chrome.storage.local.set({ extensionId });
   connectToAgent();
   chrome.alarms.create('keepAlive', { periodInMinutes: 0.4 });
   chrome.alarms.create('reloadTab', { periodInMinutes: RELOAD_TTL_MIN });
@@ -95,6 +98,18 @@ function sendLastActive() {
   }
 }
 
+async function reportIdentity() {
+  const tab = await findFbTab(1, 0);
+  if (!tab?.id || ws?.readyState !== WebSocket.OPEN) return;
+  try {
+    const result = await chrome.tabs.sendMessage(tab.id, { type: 'get_identity', id: 'hello_' + Date.now() });
+    if (result?.ok) ws.send(JSON.stringify({
+      type: 'fb_user', extensionId,
+      fbUser: { id: String(result.identityId || ''), name: result.identityName || null },
+    }));
+  } catch (_) { /* content script may still be starting; next reconnect retries */ }
+}
+
 // ─── WebSocket to Agent ─────────────────────────────────────
 
 function connectToAgent() {
@@ -113,7 +128,9 @@ function connectToAgent() {
   ws.onopen = () => {
     console.log('[FBBridge] Connected to agent');
     chrome.alarms.clear('reconnect');
-    ws.send(JSON.stringify({ type: 'fb_ready' }));
+    ws.send(JSON.stringify({ type: 'hello', extensionId, version: chrome.runtime.getManifest().version }));
+    ws.send(JSON.stringify({ type: 'fb_ready', extensionId }));
+    setTimeout(reportIdentity, 1500);
     sendLastActive(); // anchor the tab TTL on (re)connect
   };
 
@@ -191,6 +208,7 @@ function sendToAgent(msg) {
       headers: {
         'Content-Type': 'application/json',
         'X-Callback-Secret': callbackSecret || '',
+        'X-Extension-Id': extensionId || '',
       },
       body: JSON.stringify(msg),
     }).catch(() => {
@@ -212,6 +230,7 @@ function postCapture(payload) {
     headers: {
       'Content-Type': 'application/json',
       'X-Callback-Secret': callbackSecret || '',
+      'X-Extension-Id': extensionId || '',
     },
     body: JSON.stringify(payload),
   }).catch((e) => {
@@ -575,6 +594,7 @@ async function handleSwitchProfile(msg) {
       // success — the mutation can succeed while the cookie flip races the reload.
       const after = await queryIdentity(tab.id);
       if (after && String(after) === String(params.targetId)) {
+        reportIdentity();
         sendToAgent({ id, status: 200, data: { identityId: result.identityId, identityName: result.identityName } });
       } else {
         sendToAgent({ id, status: 502, error: `switch_unverified: tab acts as ${after || 'unknown'} after switching to ${params.targetId}` });

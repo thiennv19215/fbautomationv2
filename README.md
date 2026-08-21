@@ -65,6 +65,35 @@ When Facebook rotates its payload and replay starts failing, just **re-capture**
 
 ## Quickstart
 
+### Dashboard quản lý nhiều tài khoản
+
+Sau khi chạy `fbem-bridge`, mở [http://127.0.0.1:47102/ui/](http://127.0.0.1:47102/ui/).
+Mỗi Chrome Profile cài extension sẽ có một `extension_id` ổn định và xuất hiện
+riêng trong màn hình **Extension**. Từ dashboard bạn có thể:
+
+- gắn một tài khoản/Page với đúng extension;
+- tạo kịch bản Reel, ảnh/album hoặc chuyển profile trong **Thư viện kịch bản**;
+- đưa kịch bản vào hàng đợi cho một tài khoản cụ thể;
+- xem trạng thái và lịch sử chạy theo thời gian thực.
+
+Dispatcher chỉ chạy một job trên mỗi tài khoản tại một thời điểm, nhưng cho phép
+các tài khoản thuộc những extension khác nhau chạy song song. Trước khi đăng,
+extension vẫn xác minh/chuyển đúng `pageId`; template capture được lưu tách theo
+`extension_id`, nên capture của Chrome Profile này không ghi đè Profile khác.
+
+Kịch bản hỗ trợ các biến `{{account_name}}`, `{{facebook_id}}` và `{{date}}` trong
+caption hoặc các trường cấu hình lồng nhau. Cơ chế thực thi bên dưới vẫn là luồng
+capture → template → replay cũ.
+
+Frontend dashboard được viết bằng React + Vite. Để phát triển hoặc build lại:
+
+```sh
+cd frontend
+npm install
+npm run dev       # development server, proxy API sang :47102
+npm run build     # build production vào fbem/bridge/static
+```
+
 ### 1. Install
 
 ```sh

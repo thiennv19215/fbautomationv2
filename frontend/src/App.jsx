@@ -1,0 +1,1728 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Activity, BookOpen, Bot, CheckCircle2, ChevronRight, CircleAlert, Clock3,
+  Copy, Eye, Film, GalleryVerticalEnd, History, Images, LayoutDashboard, Menu,
+  MonitorDot, Pencil, Plus, RefreshCw, RotateCcw, Search, Server, Settings2,
+  ShieldCheck, Sparkles, Timer, Trash2, UserRound, UsersRound, X,
+} from "lucide-react";
+import { endpoints } from "./api";
+
+const NAV = [
+  ["overview", "Tổng quan", LayoutDashboard],
+  ["accounts", "Tài khoản", UsersRound],
+  ["extensions", "Extension", MonitorDot],
+  ["scripts", "Thư viện kịch bản", BookOpen],
+  ["jobs", "Hàng đợi & Tiến độ", History],
+];
+
+const TITLES = {
+  overview: ["Tổng quan", "Theo dõi toàn bộ hệ thống xuất bản và tiến độ thời gian thực"],
+  accounts: ["Quản lý tài khoản", "Gắn từng tài khoản với đúng Chrome Profile"],
+  extensions: ["Extension", "Theo dõi các phiên trình duyệt đang kết nối"],
+  scripts: ["Thư viện kịch bản", "Tạo nội dung một lần, vận hành trên nhiều tài khoản"],
+  jobs: ["Hàng đợi & Tiến độ", "Kiểm soát chi tiết tiến độ thực thi từng bước và kết quả"],
+};
+
+const KIND_LABEL = {
+  post_reel: "Đăng Reel",
+  post_photos: "Ảnh / Album",
+  switch_profile: "Chuyển profile",
+  get_identity: "Đọc danh tính",
+};
+
+const STATUS_LABEL = {
+  succeeded: "Thành công",
+  running: "Đang chạy",
+  queued: "Đang chờ",
+  waiting_connection: "Chờ kết nối",
+  failed: "Thất bại",
+  cancelled: "Đã hủy",
+};
+
+function Badge({ status }) {
+  const icon =
+    status === "succeeded" || status === "online" ? (
+      <CheckCircle2 />
+    ) : status === "failed" || status === "offline" ? (
+      <CircleAlert />
+    ) : status === "running" ? (
+      <RefreshCw className="spin" />
+    ) : (
+      <Clock3 />
+    );
+  return (
+    <span className={`badge badge-${status}`}>
+      {icon}
+      {STATUS_LABEL[status] ||
+        (status === "online" ? "Trực tuyến" : status === "offline" ? "Ngoại tuyến" : status)}
+    </span>
+  );
+}
+
+function Empty({ icon: Icon = Sparkles, title, text, action }) {
+  return (
+    <div className="empty">
+      <div className="empty-icon"><Icon /></div>
+      <h3>{title}</h3>
+      <p>{text}</p>
+      {action}
+    </div>
+  );
+}
+
+function Modal({ title, subtitle, children, onClose }) {
+  useEffect(() => {
+    const esc = (e) => e.key === "Escape" && onClose();
+    addEventListener("keydown", esc);
+    return () => removeEventListener("keydown", esc);
+  }, [onClose]);
+  return (
+    <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        <div className="modal-head">
+          <div>
+            <h2>{title}</h2>
+            <p>{subtitle}</p>
+          </div>
+          <button className="icon-button" onClick={onClose}><X /></button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function Stat({ icon: Icon, label, value, helper, tone }) {
+  return (
+    <article className="stat-card">
+      <div className={`stat-icon ${tone}`}><Icon /></div>
+      <div>
+        <span>{label}</span>
+        <strong>{value}</strong>
+        <small>{helper}</small>
+      </div>
+    </article>
+  );
+}
+
+function relativeTime(epoch) {
+  if (!epoch) return "Chưa có";
+  const seconds = Math.max(0, Math.floor(Date.now() / 1000 - epoch));
+  if (seconds < 60) return "Vừa xong";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} phút trước`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)} giờ trước`;
+  return new Date(epoch * 1000).toLocaleDateString("vi-VN");
+}
+
+function formatFullTime(epoch) {
+  if (!epoch) return "—";
+  return new Date(epoch * 1000).toLocaleTimeString("vi-VN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+}
+
+function formatDuration(startedAt, finishedAt, status) {
+  if (!startedAt) return "—";
+  const end = finishedAt || (status === "running" ? Date.now() / 1000 : null);
+  if (!end) return "—";
+  const diff = Math.max(0, Math.round(end - startedAt));
+  if (diff < 60) return `${diff}s`;
+  const mins = Math.floor(diff / 60);
+  const secs = diff % 60;
+  return `${mins}m ${secs}s`;
+}
+
+function computeJobProgress(job) {
+  switch (job.status) {
+    case "queued":
+      return { percent: 15, stage: "Đã xếp hàng", tone: "queued" };
+    case "waiting_connection":
+      return { percent: 25, stage: "Chờ Chrome Profile online", tone: "waiting" };
+    case "running":
+      return { percent: 70, stage: "Đang tải & xuất bản...", tone: "running" };
+    case "succeeded":
+      return { percent: 100, stage: "Hoàn tất thành công", tone: "succeeded" };
+    case "failed":
+      return { percent: 100, stage: "Thực thi thất bại", tone: "failed" };
+    case "cancelled":
+      return { percent: 100, stage: "Đã hủy bỏ", tone: "cancelled" };
+    default:
+      return { percent: 0, stage: "Chưa xác định", tone: "queued" };
+  }
+}
+
+function getPipelineSteps(job) {
+  const isMedia = ["post_reel", "post_photos"].includes(job.kind);
+  const isSwitch = job.kind === "switch_profile";
+
+  const s1 = {
+    title: "1. Khởi tạo & Xếp hàng",
+    desc: job.created_at ? formatFullTime(job.created_at) : "Chờ xếp hàng",
+    status: "completed",
+  };
+
+  let s2 = {
+    title: "2. Định tuyến & Xác thực Page",
+    desc: "Kiểm tra quyền & đồng bộ token",
+    status: "pending",
+  };
+
+  let s3 = {
+    title: isMedia ? "3. Tải & Đóng gói Media" : "3. Xử lý Payload",
+    desc: isMedia ? "Tải lên rupload Facebook" : "Kiểm tra tham số",
+    status: "pending",
+  };
+
+  let s4 = {
+    title: isSwitch ? "4. Đổi Profile Session" : "4. Xuất bản GraphQL",
+    desc: isSwitch ? "CometProfileSwitchMutation" : "ComposerStoryCreateMutation",
+    status: "pending",
+  };
+
+  let s5 = {
+    title: "5. Hoàn tất & Trả kết quả",
+    desc: job.finished_at ? formatFullTime(job.finished_at) : "Đang chờ hoàn tất",
+    status: "pending",
+  };
+
+  if (job.status === "queued" || job.status === "waiting_connection") {
+    s2.status = "pending";
+    s3.status = "pending";
+    s4.status = "pending";
+    s5.status = "pending";
+  } else if (job.status === "running") {
+    s2.status = "completed";
+    s3.status = "active";
+    s4.status = "active";
+    s5.status = "pending";
+  } else if (job.status === "succeeded") {
+    s2.status = "completed";
+    s3.status = "completed";
+    s4.status = "completed";
+    s5.status = "completed";
+  } else if (job.status === "failed") {
+    s2.status = job.started_at ? "completed" : "failed";
+    s3.status = job.started_at ? "failed" : "pending";
+    s4.status = "pending";
+    s5.status = "failed";
+    s5.desc = job.error || "Thất bại";
+  } else if (job.status === "cancelled") {
+    s5.status = "failed";
+    s5.desc = "Tác vụ đã bị hủy";
+  }
+
+  return [s1, s2, s3, s4, s5];
+}
+
+export default function App() {
+  const [view, setView] = useState("overview");
+  const [data, setData] = useState({
+    extensions: [],
+    accounts: [],
+    scripts: [],
+    jobs: [],
+    health: {},
+  });
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState("");
+  const [toast, setToast] = useState(null);
+  const [modal, setModal] = useState(null);
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [mobileNav, setMobileNav] = useState(false);
+
+  const load = useCallback(async (quiet = false) => {
+    quiet ? setRefreshing(true) : setLoading(true);
+    try {
+      const [extensions, accounts, scripts, jobs, health] = await Promise.all([
+        endpoints.extensions(),
+        endpoints.accounts(),
+        endpoints.scripts(),
+        endpoints.jobs(),
+        endpoints.health(),
+      ]);
+      setData({
+        extensions: extensions.items,
+        accounts: accounts.items,
+        scripts: scripts.items,
+        jobs: jobs.items,
+        health,
+      });
+      setError("");
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+    const timer = setInterval(() => load(true), 4000);
+    return () => clearInterval(timer);
+  }, [load]);
+
+  const notify = (message, type = "success") => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3500);
+  };
+
+  const accountMap = useMemo(
+    () => Object.fromEntries(data.accounts.map((a) => [a.id, a])),
+    [data.accounts]
+  );
+  const extensionMap = useMemo(
+    () => Object.fromEntries(data.extensions.map((e) => [e.id, e])),
+    [data.extensions]
+  );
+
+  const jobsOpen = data.jobs.filter((j) =>
+    ["queued", "running", "waiting_connection"].includes(j.status)
+  );
+  const succeededToday = data.jobs.filter(
+    (j) => j.status === "succeeded" && j.finished_at > Date.now() / 1000 - 86400
+  ).length;
+
+  const totalCompleted = data.jobs.filter((j) =>
+    ["succeeded", "failed", "cancelled"].includes(j.status)
+  ).length;
+  const successRate =
+    totalCompleted > 0
+      ? Math.round(
+          (data.jobs.filter((j) => j.status === "succeeded").length / totalCompleted) * 100
+        )
+      : 100;
+
+  const filteredJobs = useMemo(() => {
+    return data.jobs.filter((j) => {
+      const matchesQuery = `${accountMap[j.account_id]?.name || ""} ${j.kind} ${j.status} ${j.id}`
+        .toLowerCase()
+        .includes(query.toLowerCase());
+      if (!matchesQuery) return false;
+      if (statusFilter === "all") return true;
+      if (statusFilter === "running") return j.status === "running";
+      if (statusFilter === "queued") return ["queued", "waiting_connection"].includes(j.status);
+      if (statusFilter === "succeeded") return j.status === "succeeded";
+      if (statusFilter === "failed") return ["failed", "cancelled"].includes(j.status);
+      return true;
+    });
+  }, [data.jobs, accountMap, query, statusFilter]);
+
+  const submit = async (action, body, success) => {
+    try {
+      await action(body);
+      setModal(null);
+      notify(success);
+      await load(true);
+    } catch (e) {
+      notify(e.message, "error");
+    }
+  };
+
+  return (
+    <div className="app-shell">
+      <aside className={`sidebar ${mobileNav ? "open" : ""}`}>
+        <div className="brand">
+          <div className="brand-mark"><GalleryVerticalEnd /></div>
+          <div>
+            <b>FBEM</b>
+            <span>Control Center</span>
+          </div>
+        </div>
+        <nav>
+          {NAV.map(([id, label, Icon]) => (
+            <button
+              key={id}
+              className={view === id ? "active" : ""}
+              onClick={() => {
+                setView(id);
+                setMobileNav(false);
+              }}
+            >
+              <Icon />
+              <span>{label}</span>
+              {view === id && <ChevronRight />}
+            </button>
+          ))}
+        </nav>
+        <div className="sidebar-status">
+          <span className={data.health.extension_connected ? "pulse" : "pulse offline"} />
+          <div>
+            <b>{data.health.extension_connected ? "Bridge & Extension Online" : "Mất kết nối"}</b>
+            <span>127.0.0.1:47102</span>
+          </div>
+        </div>
+      </aside>
+
+      {mobileNav && <button className="nav-overlay" onClick={() => setMobileNav(false)} />}
+
+      <main>
+        <header>
+          <div className="header-title">
+            <button className="mobile-menu" onClick={() => setMobileNav(true)}><Menu /></button>
+            <div>
+              <h1>{TITLES[view][0]}</h1>
+              <p>{TITLES[view][1]}</p>
+            </div>
+          </div>
+          <div className="header-actions">
+            <div className="live-pill"><span />Live Sync</div>
+            <button
+              className="icon-button refresh"
+              onClick={() => load(true)}
+              title="Làm mới dữ liệu"
+            >
+              <RefreshCw className={refreshing ? "spin" : ""} />
+            </button>
+            <button className="avatar">AD</button>
+          </div>
+        </header>
+
+        {error && (
+          <div className="error-banner">
+            <CircleAlert />
+            Không thể tải dữ liệu: {error}
+            <button onClick={() => load()}>Thử lại</button>
+          </div>
+        )}
+
+        <div className="content">
+          {loading ? (
+            <Loading />
+          ) : (
+            <>
+              {view === "overview" && (
+                <Overview
+                  data={data}
+                  accountMap={accountMap}
+                  jobsOpen={jobsOpen}
+                  succeededToday={succeededToday}
+                  successRate={successRate}
+                  setView={setView}
+                  setModal={setModal}
+                />
+              )}
+              {view === "accounts" && (
+                <Accounts
+                  accounts={data.accounts}
+                  extensionMap={extensionMap}
+                  jobs={data.jobs}
+                  setModal={setModal}
+                />
+              )}
+              {view === "extensions" && (
+                <Extensions
+                  extensions={data.extensions}
+                  notify={notify}
+                  reload={() => load(true)}
+                />
+              )}
+              {view === "scripts" && <Scripts scripts={data.scripts} setModal={setModal} />}
+              {view === "jobs" && (
+                <Jobs
+                  jobs={filteredJobs}
+                  allJobs={data.jobs}
+                  accountMap={accountMap}
+                  query={query}
+                  setQuery={setQuery}
+                  statusFilter={statusFilter}
+                  setStatusFilter={setStatusFilter}
+                  setModal={setModal}
+                  onCancel={async (id) => {
+                    try {
+                      await endpoints.cancelJob(id);
+                      notify("Đã hủy tác vụ");
+                      load(true);
+                    } catch (e) {
+                      notify(e.message, "error");
+                    }
+                  }}
+                  onRetry={async (id) => {
+                    try {
+                      await endpoints.retryJob(id);
+                      notify("Đã đưa tác vụ chạy lại vào hàng đợi");
+                      load(true);
+                    } catch (e) {
+                      notify(e.message, "error");
+                    }
+                  }}
+                />
+              )}
+            </>
+          )}
+        </div>
+      </main>
+
+      {(modal === "account" || modal?.type === "account") && (
+        <AccountModal
+          extensions={data.extensions}
+          account={modal?.account}
+          close={() => setModal(null)}
+          submit={(body) =>
+            modal?.account
+              ? submit(
+                  (value) => endpoints.updateAccount(modal.account.id, value),
+                  body,
+                  "Đã cập nhật tài khoản"
+                )
+              : submit(endpoints.createAccount, body, "Đã thêm tài khoản")
+          }
+        />
+      )}
+
+      {(modal === "script" || modal?.type === "script") && (
+        <ScriptModal
+          script={modal?.script}
+          close={() => setModal(null)}
+          submit={(body) =>
+            modal?.script
+              ? submit(
+                  (value) => endpoints.updateScript(modal.script.id, value),
+                  body,
+                  "Đã cập nhật kịch bản"
+                )
+              : submit(endpoints.createScript, body, "Đã lưu kịch bản")
+          }
+        />
+      )}
+
+      {modal?.type === "job" && (
+        <JobModal
+          accounts={data.accounts}
+          scripts={data.scripts}
+          initialAccount={modal.accountId}
+          close={() => setModal(null)}
+          submit={async (body) => {
+            const bulk = body.accountIds?.length > 1;
+            await submit(
+              bulk ? endpoints.createBulkJobs : endpoints.createJob,
+              bulk ? body : { ...body, accountId: body.accountIds[0], accountIds: undefined },
+              bulk ? `Đã tạo ${body.accountIds.length} tác vụ` : "Đã đưa tác vụ vào hàng đợi"
+            );
+          }}
+        />
+      )}
+
+      {modal?.type === "job-detail" && (
+        <JobDetail
+          job={modal.job}
+          account={accountMap[modal.job.account_id]}
+          close={() => setModal(null)}
+          retry={async () => {
+            await endpoints.retryJob(modal.job.id);
+            setModal(null);
+            notify("Đã đưa tác vụ chạy lại vào hàng đợi");
+            load(true);
+          }}
+        />
+      )}
+
+      {modal?.type === "confirm" && (
+        <ConfirmModal
+          {...modal}
+          close={() => setModal(null)}
+          confirm={async () => {
+            try {
+              await modal.action();
+              setModal(null);
+              notify(modal.success);
+              load(true);
+            } catch (e) {
+              notify(e.message, "error");
+            }
+          }}
+        />
+      )}
+
+      {toast && (
+        <div className={`toast ${toast.type}`}>
+          <span>{toast.type === "success" ? <CheckCircle2 /> : <CircleAlert />}</span>
+          {toast.message}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Loading() {
+  return (
+    <div className="loading-grid">
+      {Array.from({ length: 8 }).map((_, i) => (
+        <div className="skeleton" key={i} />
+      ))}
+    </div>
+  );
+}
+
+function Overview({
+  data,
+  accountMap,
+  jobsOpen,
+  succeededToday,
+  successRate,
+  setView,
+  setModal,
+}) {
+  const recent = data.jobs.slice(0, 6);
+  const runningJobs = data.jobs.filter((j) => j.status === "running");
+
+  return (
+    <>
+      <section className="stats-grid">
+        <Stat
+          icon={UsersRound}
+          label="Tổng tài khoản"
+          value={data.accounts.length}
+          helper={`${data.accounts.filter((a) => a.enabled).length} đang hoạt động`}
+          tone="blue"
+        />
+        <Stat
+          icon={MonitorDot}
+          label="Extension Online"
+          value={data.extensions.length}
+          helper={`${data.extensions.filter((e) => e.busy).length} đang bận`}
+          tone="violet"
+        />
+        <Stat
+          icon={Activity}
+          label="Tác vụ đang mở"
+          value={jobsOpen.length}
+          helper={`${runningJobs.length} đang thực thi trực tiếp`}
+          tone="amber"
+        />
+        <Stat
+          icon={CheckCircle2}
+          label="Tỷ lệ thành công"
+          value={`${successRate}%`}
+          helper={`${succeededToday} bài thành công hôm nay`}
+          tone="green"
+        />
+      </section>
+
+      {/* Real-time System Progress Tracker */}
+      <section className="panel progress-overview-panel">
+        <div className="panel-head">
+          <div>
+            <h2>Tiến độ thực thi hàng đợi toàn hệ thống</h2>
+            <p>Theo dõi luồng xử lý và các tác vụ đang chạy trong thời gian thực</p>
+          </div>
+          <button className="text-button" onClick={() => setView("jobs")}>
+            Xem toàn bộ hàng đợi <ChevronRight />
+          </button>
+        </div>
+
+        <div className="system-progress-body">
+          <div className="progress-summary-bar">
+            <div className="progress-summary-info">
+              <span>
+                Trạng thái: <b>{runningJobs.length > 0 ? `Đang chạy ${runningJobs.length} tác vụ song song` : jobsOpen.length > 0 ? "Đang chờ điều phối" : "Hàng đợi rảnh"}</b>
+              </span>
+              <span>
+                {data.jobs.length > 0 ? `${data.jobs.filter((j) => j.status === "succeeded").length}/${data.jobs.length} tác vụ thành công` : "0 tác vụ"}
+              </span>
+            </div>
+            <div className="progress-bar-wrap big">
+              <div
+                className="progress-bar-fill succeeded"
+                style={{
+                  width: `${data.jobs.length > 0 ? (data.jobs.filter((j) => j.status === "succeeded").length / data.jobs.length) * 100 : 0}%`,
+                }}
+              />
+              <div
+                className="progress-bar-fill running"
+                style={{
+                  width: `${data.jobs.length > 0 ? (runningJobs.length / data.jobs.length) * 100 : 0}%`,
+                }}
+              />
+            </div>
+          </div>
+
+          {runningJobs.length > 0 && (
+            <div className="active-jobs-stream">
+              {runningJobs.map((j) => {
+                const prog = computeJobProgress(j);
+                const duration = formatDuration(j.started_at, j.finished_at, j.status);
+                return (
+                  <div className="active-job-card" key={j.id}>
+                    <div className="active-job-header">
+                      <div className="job-kind">
+                        <div><Bot /></div>
+                        <span>
+                          <b>{KIND_LABEL[j.kind] || j.kind}</b>
+                          <small>{accountMap[j.account_id]?.name || "Tài khoản"}</small>
+                        </span>
+                      </div>
+                      <div className="active-job-timer">
+                        <Timer /> {duration}
+                      </div>
+                    </div>
+                    <div className="progress-bar-wrap">
+                      <div className="progress-bar-fill running" style={{ width: `${prog.percent}%` }} />
+                    </div>
+                    <div className="active-job-stage">
+                      <span>{prog.stage}</span>
+                      <small>{prog.percent}%</small>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </section>
+
+      <section className="overview-grid">
+        <div className="panel account-panel">
+          <div className="panel-head">
+            <div>
+              <h2>Tình trạng tài khoản</h2>
+              <p>Phiên và hàng đợi theo từng tài khoản</p>
+            </div>
+            <button className="text-button" onClick={() => setView("accounts")}>
+              Xem tất cả <ChevronRight />
+            </button>
+          </div>
+          {data.accounts.length ? (
+            <div className="account-list">
+              {data.accounts.slice(0, 5).map((a) => {
+                const ext = data.extensions.find((e) => e.id === a.extension_id);
+                const queue = jobsOpen.filter((j) => j.account_id === a.id);
+                return (
+                  <div className="account-row" key={a.id}>
+                    <div className="account-avatar">{a.name.slice(0, 2).toUpperCase()}</div>
+                    <div className="account-name">
+                      <b>{a.name}</b>
+                      <span>ID {a.facebook_id}</span>
+                    </div>
+                    <Badge status={ext ? "online" : "offline"} />
+                    <div className="queue-count">
+                      <b>{queue.length}</b>
+                      <span>tác vụ</span>
+                    </div>
+                    <button
+                      className="icon-button"
+                      onClick={() => setModal({ type: "job", accountId: a.id })}
+                    >
+                      <Plus />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <Empty
+              icon={UserRound}
+              title="Chưa có tài khoản"
+              text="Kết nối extension và thêm tài khoản đầu tiên."
+              action={
+                <button className="primary" onClick={() => setModal("account")}>
+                  <Plus /> Thêm tài khoản
+                </button>
+              }
+            />
+          )}
+        </div>
+
+        <div className="panel">
+          <div className="panel-head">
+            <div>
+              <h2>Hoạt động gần đây</h2>
+              <p>Cập nhật theo thời gian thực</p>
+            </div>
+            <button className="text-button" onClick={() => setView("jobs")}>
+              Lịch sử <ChevronRight />
+            </button>
+          </div>
+          {recent.length ? (
+            <div className="activity-list">
+              {recent.map((j) => (
+                <div className="activity-row" key={j.id}>
+                  <div className={`activity-icon ${j.status}`}><Bot /></div>
+                  <div>
+                    <b>{KIND_LABEL[j.kind] || j.kind}</b>
+                    <span>
+                      {accountMap[j.account_id]?.name || "Tài khoản"} · {relativeTime(j.created_at)}
+                    </span>
+                  </div>
+                  <Badge status={j.status} />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <Empty
+              icon={History}
+              title="Chưa có hoạt động"
+              text="Các tác vụ mới sẽ xuất hiện tại đây."
+            />
+          )}
+        </div>
+      </section>
+    </>
+  );
+}
+
+function Accounts({ accounts, extensionMap, jobs, setModal }) {
+  return (
+    <>
+      <PageToolbar
+        title={`${accounts.length} tài khoản`}
+        subtitle="Mỗi tài khoản được khóa với một Chrome Profile riêng."
+        action={
+          <button className="primary" onClick={() => setModal("account")}>
+            <Plus /> Thêm tài khoản
+          </button>
+        }
+      />
+      {accounts.length ? (
+        <div className="account-cards">
+          {accounts.map((a) => {
+            const ext = extensionMap[a.extension_id];
+            const active = jobs.filter(
+              (j) =>
+                j.account_id === a.id &&
+                ["queued", "running", "waiting_connection"].includes(j.status)
+            );
+            return (
+              <article className="account-card" key={a.id}>
+                <div className="account-card-top">
+                  <div className="large-avatar">{a.name.slice(0, 2).toUpperCase()}</div>
+                  <div className="card-actions">
+                    <Badge status={ext ? "online" : "offline"} />
+                    <button
+                      className="icon-button"
+                      title="Chỉnh sửa"
+                      onClick={() => setModal({ type: "account", account: a })}
+                    >
+                      <Pencil />
+                    </button>
+                    <button
+                      className="icon-button danger"
+                      title="Xóa"
+                      onClick={() =>
+                        setModal({
+                          type: "confirm",
+                          title: "Xóa tài khoản?",
+                          text: `Tài khoản ${a.name} sẽ bị xóa khỏi dashboard. Lịch sử job vẫn được giữ lại.`,
+                          label: "Xóa tài khoản",
+                          success: "Đã xóa tài khoản",
+                          action: () => endpoints.deleteAccount(a.id),
+                        })
+                      }
+                    >
+                      <Trash2 />
+                    </button>
+                  </div>
+                </div>
+                <h3>{a.name}</h3>
+                <p>Facebook ID · {a.facebook_id}</p>
+                <dl>
+                  <div>
+                    <dt>Extension</dt>
+                    <dd>{ext?.id?.slice(0, 18) || "Chưa kết nối"}</dd>
+                  </div>
+                  <div>
+                    <dt>Hàng đợi</dt>
+                    <dd>{active.length} tác vụ</dd>
+                  </div>
+                  <div>
+                    <dt>Trạng thái</dt>
+                    <dd>{a.enabled ? "Đang quản lý" : "Đã tạm dừng"}</dd>
+                  </div>
+                </dl>
+                <button
+                  className="secondary full"
+                  disabled={!a.enabled}
+                  onClick={() => setModal({ type: "job", accountId: a.id })}
+                >
+                  <Plus /> Tạo tác vụ
+                </button>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="panel">
+          <Empty
+            icon={UsersRound}
+            title="Bắt đầu với tài khoản đầu tiên"
+            text="Tài khoản giúp hệ thống định tuyến chính xác nội dung tới đúng Chrome Profile."
+            action={
+              <button className="primary" onClick={() => setModal("account")}>
+                <Plus /> Thêm tài khoản
+              </button>
+            }
+          />
+        </div>
+      )}
+    </>
+  );
+}
+
+function Extensions({ extensions, notify, reload }) {
+  return (
+    <>
+      <PageToolbar
+        title={`${extensions.length} phiên đang kết nối`}
+        subtitle="Danh tính, template capture và tải của từng Chrome Profile."
+      />
+      {extensions.length ? (
+        <div className="extension-grid">
+          {extensions.map((e) => (
+            <ExtensionCard key={e.id} extension={e} notify={notify} reload={reload} />
+          ))}
+        </div>
+      ) : (
+        <div className="panel">
+          <Empty
+            icon={MonitorDot}
+            title="Chưa thấy extension"
+            text="Hãy mở Chrome Profile có FBEM và một tab Facebook đã đăng nhập."
+          />
+        </div>
+      )}
+    </>
+  );
+}
+
+function ExtensionCard({ extension: e, notify, reload }) {
+  const [templates, setTemplates] = useState(null);
+  const [checking, setChecking] = useState(false);
+  useEffect(() => {
+    endpoints.templateStatus(e.id).then(setTemplates).catch(() => setTemplates(null));
+  }, [e.id]);
+
+  const identity = async () => {
+    setChecking(true);
+    try {
+      const result = await endpoints.extensionIdentity(e.id);
+      notify(`Đang đăng nhập: ${result.name || result.id}`);
+      reload();
+    } catch (err) {
+      notify(err.message, "error");
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  return (
+    <article className="extension-card">
+      <div className="extension-visual">
+        <Server />
+        <span className="online-dot" />
+      </div>
+      <div className="extension-title">
+        <div>
+          <h3>{e.fbUser?.name || (e.id === "legacy" ? "Extension chưa reload" : "Chrome Profile")}</h3>
+          <code>{e.id}</code>
+        </div>
+        <Badge status={e.busy ? "running" : "online"} />
+      </div>
+      <div className="metrics">
+        <div>
+          <span>Danh tính</span>
+          <b>{e.fbUser?.id || "Chưa đồng bộ"}</b>
+        </div>
+        <div>
+          <span>Thành công</span>
+          <b>{e.successCount}</b>
+        </div>
+        <div>
+          <span>Thất bại</span>
+          <b>{e.failedCount}</b>
+        </div>
+        <div>
+          <span>Pending</span>
+          <b>{e.pending}</b>
+        </div>
+      </div>
+      <div className="template-status">
+        <span className={templates?.reel ? "ready" : "missing"}><Film /> Reel</span>
+        <span className={templates?.photo ? "ready" : "missing"}><Images /> Ảnh</span>
+        <span className={templates?.switchProfile ? "ready" : "missing"}><ShieldCheck /> Switch</span>
+      </div>
+      <div className="extension-footer">
+        <div className="last-seen">
+          <Activity /> Hoạt động {relativeTime(e.lastActiveAt)}
+        </div>
+        <button className="secondary compact" onClick={identity} disabled={checking}>
+          <RefreshCw className={checking ? "spin" : ""} />
+          Kiểm tra danh tính
+        </button>
+      </div>
+      {e.id === "legacy" && (
+        <div className="warning-note">
+          <CircleAlert /> Reload FBEM tại chrome://extensions để kích hoạt mã phiên ổn định.
+        </div>
+      )}
+    </article>
+  );
+}
+
+function Scripts({ scripts, setModal }) {
+  return (
+    <>
+      <PageToolbar
+        title={`${scripts.length} kịch bản`}
+        subtitle="Cấu hình nội dung được tái sử dụng trên các tài khoản."
+        action={
+          <button className="primary" onClick={() => setModal("script")}>
+            <Plus /> Tạo kịch bản
+          </button>
+        }
+      />
+      {scripts.length ? (
+        <div className="script-grid">
+          {scripts.map((s) => (
+            <article className="script-card" key={s.id}>
+              <div className={`script-symbol ${s.kind}`}><BookOpen /></div>
+              <div className="script-main">
+                <div className="script-heading">
+                  <Badge status={s.enabled ? "online" : "offline"} />
+                  <div className="inline-actions">
+                    <span>Phiên bản {s.version}</span>
+                    <button
+                      className="icon-button"
+                      title="Chỉnh sửa"
+                      onClick={() => setModal({ type: "script", script: s })}
+                    >
+                      <Pencil />
+                    </button>
+                    <button
+                      className="icon-button danger"
+                      title="Xóa"
+                      onClick={() =>
+                        setModal({
+                          type: "confirm",
+                          title: "Xóa kịch bản?",
+                          text: `Kịch bản ${s.name} sẽ bị xóa. Các job đã chạy vẫn giữ input và kết quả.`,
+                          label: "Xóa kịch bản",
+                          success: "Đã xóa kịch bản",
+                          action: () => endpoints.deleteScript(s.id),
+                        })
+                      }
+                    >
+                      <Trash2 />
+                    </button>
+                  </div>
+                </div>
+                <h3>{s.name}</h3>
+                <p>{s.description || "Chưa có mô tả cho kịch bản này."}</p>
+                <div className="script-meta">
+                  <span><Settings2 /> {KIND_LABEL[s.kind] || s.kind}</span>
+                  <span><Clock3 /> Cập nhật {relativeTime(s.updated_at)}</span>
+                </div>
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <div className="panel">
+          <Empty
+            icon={BookOpen}
+            title="Thư viện còn trống"
+            text="Tạo kịch bản để tái sử dụng caption, media và cấu hình đăng."
+            action={
+              <button className="primary" onClick={() => setModal("script")}>
+                <Plus /> Tạo kịch bản
+              </button>
+            }
+          />
+        </div>
+      )}
+    </>
+  );
+}
+
+function Jobs({
+  jobs,
+  allJobs,
+  accountMap,
+  query,
+  setQuery,
+  statusFilter,
+  setStatusFilter,
+  setModal,
+  onCancel,
+  onRetry,
+}) {
+  const counts = useMemo(() => {
+    return {
+      all: allJobs.length,
+      running: allJobs.filter((j) => j.status === "running").length,
+      queued: allJobs.filter((j) => ["queued", "waiting_connection"].includes(j.status)).length,
+      succeeded: allJobs.filter((j) => j.status === "succeeded").length,
+      failed: allJobs.filter((j) => ["failed", "cancelled"].includes(j.status)).length,
+    };
+  }, [allJobs]);
+
+  return (
+    <>
+      <PageToolbar
+        title={`${jobs.length} tác vụ`}
+        subtitle="Theo dõi tiến độ chi tiết từng giai đoạn thực thi theo thời gian thực."
+        action={
+          <button className="primary" onClick={() => setModal({ type: "job" })}>
+            <Plus /> Tạo / Chạy hàng loạt
+          </button>
+        }
+      >
+        <div className="search">
+          <Search />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Tìm theo tài khoản, ID hoặc loại..."
+          />
+        </div>
+      </PageToolbar>
+
+      {/* Status Filter Tabs */}
+      <div className="filter-tabs-bar">
+        <button
+          className={statusFilter === "all" ? "tab-btn active" : "tab-btn"}
+          onClick={() => setStatusFilter("all")}
+        >
+          Tất cả <span className="tab-count">{counts.all}</span>
+        </button>
+        <button
+          className={statusFilter === "running" ? "tab-btn active" : "tab-btn"}
+          onClick={() => setStatusFilter("running")}
+        >
+          <span className="dot pulse-blue" /> Đang chạy <span className="tab-count">{counts.running}</span>
+        </button>
+        <button
+          className={statusFilter === "queued" ? "tab-btn active" : "tab-btn"}
+          onClick={() => setStatusFilter("queued")}
+        >
+          <Clock3 className="tab-icon" /> Đang chờ <span className="tab-count">{counts.queued}</span>
+        </button>
+        <button
+          className={statusFilter === "succeeded" ? "tab-btn active" : "tab-btn"}
+          onClick={() => setStatusFilter("succeeded")}
+        >
+          <CheckCircle2 className="tab-icon success" /> Thành công <span className="tab-count">{counts.succeeded}</span>
+        </button>
+        <button
+          className={statusFilter === "failed" ? "tab-btn active" : "tab-btn"}
+          onClick={() => setStatusFilter("failed")}
+        >
+          <CircleAlert className="tab-icon danger" /> Thất bại <span className="tab-count">{counts.failed}</span>
+        </button>
+      </div>
+
+      <div className="panel table-panel">
+        {jobs.length ? (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Tác vụ</th>
+                  <th>Tài khoản / Page</th>
+                  <th>Tiến độ xử lý</th>
+                  <th>Thời lượng & Lần thử</th>
+                  <th>Trạng thái</th>
+                  <th>Kết quả / Phản hồi</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {jobs.map((j) => {
+                  const prog = computeJobProgress(j);
+                  const duration = formatDuration(j.started_at, j.finished_at, j.status);
+                  return (
+                    <tr key={j.id} className={j.status === "running" ? "row-running" : ""}>
+                      <td>
+                        <div className="job-kind">
+                          <div><Bot /></div>
+                          <span>
+                            <b>{KIND_LABEL[j.kind] || j.kind}</b>
+                            <small>{j.id.slice(0, 8)}</small>
+                          </span>
+                        </div>
+                      </td>
+                      <td>
+                        <b>{accountMap[j.account_id]?.name || "Không xác định"}</b>
+                        <small className="cell-subtext">ID: {accountMap[j.account_id]?.facebook_id || "—"}</small>
+                      </td>
+                      <td className="progress-cell">
+                        <div className="table-progress-wrap">
+                          <div className="table-progress-labels">
+                            <span className="table-stage-text">{prog.stage}</span>
+                            <span className="table-percent">{prog.percent}%</span>
+                          </div>
+                          <div className="progress-bar-wrap mini">
+                            <div
+                              className={`progress-bar-fill ${prog.tone}`}
+                              style={{ width: `${prog.percent}%` }}
+                            />
+                          </div>
+                        </div>
+                      </td>
+                      <td>
+                        <span className="duration-tag"><Timer /> {duration}</span>
+                        <small>{j.attempts}/{j.max_attempts} lần thử</small>
+                      </td>
+                      <td>
+                        <Badge status={j.status} />
+                      </td>
+                      <td className={j.error ? "error-text" : "result-text"}>
+                        {j.error || (j.result ? "Đã có kết quả xuất bản" : "—")}
+                      </td>
+                      <td>
+                        <div className="row-actions">
+                          <button
+                            className="icon-button"
+                            title="Xem tiến độ & chi tiết"
+                            onClick={() => setModal({ type: "job-detail", job: j })}
+                          >
+                            <Eye />
+                          </button>
+                          {["failed", "cancelled"].includes(j.status) && (
+                            <button
+                              className="icon-button"
+                              title="Chạy lại tác vụ"
+                              onClick={() => onRetry(j.id)}
+                            >
+                              <RotateCcw />
+                            </button>
+                          )}
+                          {["queued", "waiting_connection"].includes(j.status) && (
+                            <button
+                              className="icon-button danger"
+                              title="Hủy tác vụ"
+                              onClick={() => onCancel(j.id)}
+                            >
+                              <X />
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <Empty
+            icon={History}
+            title="Không có tác vụ phù hợp"
+            text="Tạo tác vụ mới hoặc chuyển đổi bộ lọc trạng thái."
+          />
+        )}
+      </div>
+    </>
+  );
+}
+
+function PageToolbar({ title, subtitle, action, children }) {
+  return (
+    <div className="page-toolbar">
+      <div>
+        <h2>{title}</h2>
+        <p>{subtitle}</p>
+      </div>
+      <div className="toolbar-actions">
+        {children}
+        {action}
+      </div>
+    </div>
+  );
+}
+
+function AccountModal({ extensions, account, close, submit }) {
+  const [form, setForm] = useState({
+    name: account?.name || "",
+    facebookId: account?.facebook_id || "",
+    extensionId: account?.extension_id || extensions[0]?.id || "",
+    enabled: account?.enabled ?? true,
+  });
+
+  return (
+    <Modal
+      title={account ? "Chỉnh sửa tài khoản" : "Thêm tài khoản"}
+      subtitle="Gắn tài khoản với đúng phiên trình duyệt Chrome Profile."
+      onClose={close}
+    >
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          submit(form);
+        }}
+      >
+        <Field label="Tên hiển thị">
+          <input
+            required
+            value={form.name}
+            onChange={(e) => setForm({ ...form, name: e.target.value })}
+            placeholder="Ví dụ: Page Tin Tức AI"
+          />
+        </Field>
+        <Field label="Facebook / Page ID">
+          <input
+            required
+            value={form.facebookId}
+            onChange={(e) =>
+              setForm({ ...form, facebookId: e.target.value.replace(/\D/g, "") })
+            }
+            placeholder="61550123456789"
+          />
+        </Field>
+        <Field label="Extension (Chrome Profile)">
+          <select
+            required
+            value={form.extensionId}
+            onChange={(e) => setForm({ ...form, extensionId: e.target.value })}
+          >
+            <option value="">Chọn extension kết nối</option>
+            {!extensions.some((x) => x.id === form.extensionId) && form.extensionId && (
+              <option value={form.extensionId}>{form.extensionId} (offline)</option>
+            )}
+            {extensions.map((x) => (
+              <option key={x.id} value={x.id}>
+                {x.fbUser?.name || x.id}
+              </option>
+            ))}
+          </select>
+          <small>Mỗi tài khoản nên dùng một Chrome Profile riêng để tránh xung đột.</small>
+        </Field>
+        <label className="toggle-row">
+          <div>
+            <b>Cho phép chạy tác vụ</b>
+            <span>Tắt để tạm dừng tài khoản mà không xóa dữ liệu.</span>
+          </div>
+          <input
+            type="checkbox"
+            checked={form.enabled}
+            onChange={(e) => setForm({ ...form, enabled: e.target.checked })}
+          />
+        </label>
+        <ModalActions
+          close={close}
+          disabled={!form.extensionId}
+          label={account ? "Cập nhật tài khoản" : "Thêm tài khoản"}
+        />
+      </form>
+    </Modal>
+  );
+}
+
+function ScriptModal({ script, close, submit }) {
+  const [form, setForm] = useState({
+    name: script?.name || "",
+    description: script?.description || "",
+    kind: script?.kind || "post_reel",
+    enabled: script?.enabled ?? true,
+    configText: script
+      ? JSON.stringify(script.config || {}, null, 2)
+      : '{\n  "caption": "Nội dung cho {{account_name}} ngày {{date}}"\n}',
+  });
+  const [jsonError, setJsonError] = useState("");
+
+  const send = (e) => {
+    e.preventDefault();
+    try {
+      const config = JSON.parse(form.configText);
+      setJsonError("");
+      submit({
+        name: form.name,
+        description: form.description,
+        kind: form.kind,
+        config,
+        enabled: form.enabled,
+      });
+    } catch {
+      setJsonError("JSON không hợp lệ. Vui lòng kiểm tra dấu ngoặc và dấu phẩy.");
+    }
+  };
+
+  return (
+    <Modal
+      title={script ? "Chỉnh sửa kịch bản" : "Tạo kịch bản"}
+      subtitle="Kịch bản tái sử dụng cấu hình và hỗ trợ biến động {{account_name}}, {{date}}."
+      onClose={close}
+    >
+      <form onSubmit={send}>
+        <Field label="Tên kịch bản">
+          <input
+            required
+            value={form.name}
+            onChange={(e) => setForm({ ...form, name: e.target.value })}
+            placeholder="Đăng Reel buổi sáng"
+          />
+        </Field>
+        <div className="form-grid">
+          <Field label="Loại kịch bản">
+            <select
+              value={form.kind}
+              onChange={(e) => setForm({ ...form, kind: e.target.value })}
+            >
+              {Object.entries(KIND_LABEL)
+                .filter(([k]) => k !== "get_identity")
+                .map(([k, v]) => (
+                  <option key={k} value={k}>
+                    {v}
+                  </option>
+                ))}
+            </select>
+          </Field>
+          <Field label="Trạng thái">
+            <label className="read-only">
+              <input
+                type="checkbox"
+                checked={form.enabled}
+                onChange={(e) => setForm({ ...form, enabled: e.target.checked })}
+              />
+              {form.enabled ? "Đang sử dụng" : "Đã tạm dừng"}
+            </label>
+          </Field>
+        </div>
+        <Field label="Mô tả">
+          <textarea
+            value={form.description}
+            onChange={(e) => setForm({ ...form, description: e.target.value })}
+            placeholder="Mục đích và cách dùng kịch bản..."
+          />
+        </Field>
+        <Field label="Cấu hình JSON">
+          <textarea
+            className="code-input"
+            value={form.configText}
+            onChange={(e) => setForm({ ...form, configText: e.target.value })}
+          />
+          {jsonError && <small className="field-error">{jsonError}</small>}
+          <small>Biến hỗ trợ: {"{{account_name}}"}, {"{{facebook_id}}"}, {"{{date}}"}</small>
+        </Field>
+        <ModalActions close={close} label={script ? "Lưu phiên bản mới" : "Tạo kịch bản"} />
+      </form>
+    </Modal>
+  );
+}
+
+function JobModal({ accounts, scripts, initialAccount, close, submit }) {
+  const enabled = accounts.filter((a) => a.enabled);
+  const [form, setForm] = useState({
+    accountIds: initialAccount ? [initialAccount] : enabled[0] ? [enabled[0].id] : [],
+    mode: scripts.some((s) => s.enabled) ? "script" : "direct",
+    scriptId: scripts.find((s) => s.enabled)?.id || "",
+    kind: "get_identity",
+    inputText: "{}",
+    scheduled: "",
+  });
+  const [jsonError, setJsonError] = useState("");
+
+  const toggle = (id) =>
+    setForm((current) => ({
+      ...current,
+      accountIds: current.accountIds.includes(id)
+        ? current.accountIds.filter((x) => x !== id)
+        : [...current.accountIds, id],
+    }));
+
+  const send = (e) => {
+    e.preventDefault();
+    try {
+      const input = JSON.parse(form.inputText);
+      if (form.scheduled)
+        input.scheduledPublishTime = Math.floor(new Date(form.scheduled).getTime() / 1000);
+      setJsonError("");
+      submit({
+        accountIds: form.accountIds,
+        scriptId: form.mode === "script" ? form.scriptId : undefined,
+        kind: form.mode === "direct" ? form.kind : undefined,
+        input,
+      });
+    } catch {
+      setJsonError("JSON ghi đè hoặc thời gian lên lịch không hợp lệ.");
+    }
+  };
+
+  return (
+    <Modal
+      title="Tạo tác vụ mới"
+      subtitle="Chọn một hoặc nhiều tài khoản; hệ thống tự tách hàng đợi và thực thi an toàn."
+      onClose={close}
+    >
+      <form onSubmit={send}>
+        <Field label="Tài khoản thực thi">
+          <div className="account-picker">
+            <div className="picker-head">
+              <span>Đã chọn {form.accountIds.length}/{enabled.length}</span>
+              <button
+                type="button"
+                onClick={() =>
+                  setForm({
+                    ...form,
+                    accountIds:
+                      form.accountIds.length === enabled.length
+                        ? []
+                        : enabled.map((a) => a.id),
+                  })
+                }
+              >
+                {form.accountIds.length === enabled.length ? "Bỏ chọn" : "Chọn tất cả"}
+              </button>
+            </div>
+            {enabled.map((a) => (
+              <label key={a.id}>
+                <input
+                  type="checkbox"
+                  checked={form.accountIds.includes(a.id)}
+                  onChange={() => toggle(a.id)}
+                />
+                <span>
+                  {a.name}
+                  <small>{a.facebook_id}</small>
+                </span>
+              </label>
+            ))}
+          </div>
+        </Field>
+
+        <div className="segmented">
+          <button
+            type="button"
+            className={form.mode === "script" ? "active" : ""}
+            onClick={() => setForm({ ...form, mode: "script" })}
+          >
+            Từ kịch bản mẫu
+          </button>
+          <button
+            type="button"
+            className={form.mode === "direct" ? "active" : ""}
+            onClick={() => setForm({ ...form, mode: "direct" })}
+          >
+            Tác vụ trực tiếp
+          </button>
+        </div>
+
+        {form.mode === "script" ? (
+          <Field label="Kịch bản">
+            <select
+              required
+              value={form.scriptId}
+              onChange={(e) => setForm({ ...form, scriptId: e.target.value })}
+            >
+              <option value="">Chọn kịch bản</option>
+              {scripts
+                .filter((s) => s.enabled)
+                .map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name} · {KIND_LABEL[s.kind]}
+                  </option>
+                ))}
+            </select>
+          </Field>
+        ) : (
+          <Field label="Loại tác vụ">
+            <select
+              value={form.kind}
+              onChange={(e) => setForm({ ...form, kind: e.target.value })}
+            >
+              {Object.entries(KIND_LABEL).map(([key, label]) => (
+                <option key={key} value={key}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
+
+        <Field label="Thời gian Facebook xuất bản (không bắt buộc)">
+          <input
+            type="datetime-local"
+            value={form.scheduled}
+            onChange={(e) => setForm({ ...form, scheduled: e.target.value })}
+          />
+          <small>Job vẫn chạy ngay để gửi lệnh hẹn giờ lên lịch sang Facebook.</small>
+        </Field>
+
+        <Field label="Input / Ghi đè cấu hình JSON">
+          <textarea
+            className="code-input"
+            value={form.inputText}
+            onChange={(e) => setForm({ ...form, inputText: e.target.value })}
+          />
+          {jsonError && <small className="field-error">{jsonError}</small>}
+          <small>Reel: videoUrl, caption · Ảnh: imageUrls, caption · Switch: targetId</small>
+        </Field>
+
+        {!enabled.length && (
+          <div className="warning-note">
+            <CircleAlert /> Cần có ít nhất một tài khoản đang bật.
+          </div>
+        )}
+
+        <ModalActions
+          close={close}
+          disabled={!form.accountIds.length || (form.mode === "script" && !form.scriptId)}
+          label={form.accountIds.length > 1 ? `Tạo ${form.accountIds.length} tác vụ` : "Đưa vào hàng đợi"}
+        />
+      </form>
+    </Modal>
+  );
+}
+
+function JobDetail({ job, account, close, retry }) {
+  const copy = (value) => navigator.clipboard?.writeText(JSON.stringify(value, null, 2));
+  const prog = computeJobProgress(job);
+  const steps = getPipelineSteps(job);
+  const duration = formatDuration(job.started_at, job.finished_at, job.status);
+
+  return (
+    <Modal title="Chi tiết tiến độ tác vụ" subtitle={`ID Tác vụ: ${job.id}`} onClose={close}>
+      {/* Progress Bar & Status */}
+      <div className="detail-progress-section">
+        <div className="detail-progress-head">
+          <div>
+            <span className="stage-title">{prog.stage}</span>
+            <Badge status={job.status} />
+          </div>
+          <strong className="stage-percent">{prog.percent}%</strong>
+        </div>
+        <div className="progress-bar-wrap large">
+          <div
+            className={`progress-bar-fill ${prog.tone}`}
+            style={{ width: `${prog.percent}%` }}
+          />
+        </div>
+      </div>
+
+      {/* Visual Pipeline Stepper */}
+      <div className="stepper-wrap">
+        <h3>Quy trình xử lý tuần tự (Execution Pipeline)</h3>
+        <div className="pipeline-stepper">
+          {steps.map((step, idx) => (
+            <div className={`stepper-step ${step.status}`} key={idx}>
+              <div className="step-marker">
+                {step.status === "completed" ? (
+                  <CheckCircle2 />
+                ) : step.status === "active" ? (
+                  <RefreshCw className="spin" />
+                ) : step.status === "failed" ? (
+                  <CircleAlert />
+                ) : (
+                  <span>{idx + 1}</span>
+                )}
+              </div>
+              <div className="step-info">
+                <b>{step.title}</b>
+                <small>{step.desc}</small>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Metrics & Timers Grid */}
+      <div className="detail-grid">
+        <div>
+          <span>Tài khoản / Fanpage</span>
+          <b>{account?.name || job.account_id}</b>
+        </div>
+        <div>
+          <span>Loại tác vụ</span>
+          <b>{KIND_LABEL[job.kind] || job.kind}</b>
+        </div>
+        <div>
+          <span>Thời lượng thực thi</span>
+          <b><Timer /> {duration}</b>
+        </div>
+        <div>
+          <span>Số lần thử (Attempts)</span>
+          <b>{job.attempts}/{job.max_attempts} lần</b>
+        </div>
+      </div>
+
+      <div className="timeline-info-grid">
+        <div>
+          <span>Tạo lúc</span>
+          <small>{formatFullTime(job.created_at)}</small>
+        </div>
+        <div>
+          <span>Bắt đầu lúc</span>
+          <small>{formatFullTime(job.started_at)}</small>
+        </div>
+        <div>
+          <span>Hoàn tất lúc</span>
+          <small>{formatFullTime(job.finished_at)}</small>
+        </div>
+      </div>
+
+      {job.error && (
+        <div className="detail-error">
+          <CircleAlert />
+          <div>
+            <b>Lỗi thực thi:</b>
+            <p>{job.error}</p>
+          </div>
+        </div>
+      )}
+
+      <JsonBlock title="Input cấu hình đã mở rộng" value={job.input} copy={copy} />
+      <JsonBlock title="Kết quả phản hồi từ Facebook" value={job.result} copy={copy} />
+
+      <div className="modal-actions">
+        <button className="secondary" onClick={close}>Đóng</button>
+        {["failed", "cancelled"].includes(job.status) && (
+          <button className="primary" onClick={retry}>
+            <RotateCcw /> Chạy lại ngay
+          </button>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+function JsonBlock({ title, value, copy }) {
+  return (
+    <div className="json-block">
+      <div>
+        <b>{title}</b>
+        <button onClick={() => copy(value)}><Copy /> Sao chép</button>
+      </div>
+      <pre>{JSON.stringify(value ?? null, null, 2)}</pre>
+    </div>
+  );
+}
+
+function ConfirmModal({ title, text, label, close, confirm }) {
+  return (
+    <Modal title={title} subtitle="Hành động này cần được xác nhận." onClose={close}>
+      <div className="confirm-content">
+        <div><Trash2 /></div>
+        <p>{text}</p>
+      </div>
+      <div className="modal-actions">
+        <button className="secondary" onClick={close}>Quay lại</button>
+        <button className="danger-button" onClick={confirm}>{label}</button>
+      </div>
+    </Modal>
+  );
+}
+
+function Field({ label, children }) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function ModalActions({ close, disabled, label = "Lưu thay đổi" }) {
+  return (
+    <div className="modal-actions">
+      <button type="button" className="secondary" onClick={close}>Hủy</button>
+      <button className="primary" disabled={disabled}>{label}</button>
+    </div>
+  );
+}
+
