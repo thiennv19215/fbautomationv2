@@ -61,6 +61,15 @@ async def execute_job(job: dict) -> None:
             admin_store.retry_or_fail(job["id"], str(response.get("error") or response))
         else:
             admin_store.finish_job(job["id"], "succeeded", result=normalize_browser_text(response.get("data") or response))
+            try:
+                from .server import cleanup_media_file
+                if method == "post_reel" and payload.get("videoUrl"):
+                    cleanup_media_file(str(payload["videoUrl"]))
+                elif method == "post_photos" and payload.get("imageUrls"):
+                    for img in payload["imageUrls"]:
+                        cleanup_media_file(str(img))
+            except Exception as clean_err:
+                logger.warning(f"Error cleaning media for job {job['id']}: {clean_err}")
     except Exception as exc:  # noqa: BLE001
         logger.exception("job %s failed", job["id"])
         admin_store.retry_or_fail(job["id"], str(exc))

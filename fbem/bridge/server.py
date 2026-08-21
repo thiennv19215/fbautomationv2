@@ -335,6 +335,16 @@ class PostPhotosBody(BaseModel):
             raise ValueError(
                 f"scheduledPublishTime must be epoch SECONDS (got {v}; looks like ms or out of range)"
             )
+
+    @field_validator("scheduledPublishTime")
+    @classmethod
+    def _check_schedule(cls, v: int | None) -> int | None:
+        if v is None:
+            return v
+        if v < 1_000_000_000 or v > 10_000_000_000:
+            raise ValueError(
+                f"scheduledPublishTime must be epoch SECONDS (got {v}; looks like ms or out of range)"
+            )
         return v
 
 
@@ -369,8 +379,6 @@ def health() -> dict:
     scope = default_session.extension_id if default_session else None
     tpl = capture_store.load_template(scope)
     capture = capture_store.capture_stats(scope)
-    # Anchor freshness to the most recent of: explicit reload/connect, or a real
-    # captured request (any tab activity keeps it fresh).
     extension_items = connection_registry.list()
     actives = [item["lastActiveAt"] for item in extension_items]
     if capture["last_capture_at"]:
@@ -382,12 +390,9 @@ def health() -> dict:
         "extension_count": len(extension_items),
         "extensions": extension_items,
         "fb_user": default_session.fb_user if default_session else None,
-        # Proof the extension is live on a logged-in FB tab: it streams captured
-        # requests as soon as the tab (re)loads. tab_active flips true on reload.
         "tab_active": capture["tab_active"],
         "last_capture_at": capture["last_capture_at"],
         "captures": capture["captures"],
-        # Tab TTL (auto-reload freshness window).
         "last_active_at": ttl["last_active_at"],
         "ttl_s": ttl["ttl_s"],
         "ttl_remaining_s": ttl["ttl_remaining_s"],
@@ -397,6 +402,36 @@ def health() -> dict:
         "capture": capture,
         "ws_stats": {"connected": len(extension_items), "pending": sum(x["pending"] for x in extension_items)},
     }
+
+
+def cleanup_media_file(url_or_path: str) -> None:
+    """Delete a media file from media dirs once scheduled or posted successfully."""
+    try:
+        from urllib.parse import urlparse, parse_qs
+        filename = None
+        if "name=" in url_or_path:
+            qs = parse_qs(urlparse(url_or_path).query)
+            filename = qs.get("name", [None])[0]
+        if not filename:
+            filename = Path(url_or_path).name
+
+        if filename:
+            p1 = _VIDEO_DIR / filename
+            if p1.is_file():
+                p1.unlink(missing_ok=True)
+                logger.info("Deleted posted media file from media_dir: %s", p1)
+
+            p2 = Path("media").resolve() / filename
+            if p2.is_file():
+                p2.unlink(missing_ok=True)
+                logger.info("Deleted posted media file from workspace media: %s", p2)
+
+        p3 = Path(url_or_path).expanduser().resolve()
+        if p3.is_file():
+            p3.unlink(missing_ok=True)
+            logger.info("Deleted source media file: %s", p3)
+    except Exception as e:
+        logger.warning("Error cleaning up media file %s: %s", url_or_path, e)
 
 
 @app.post("/post-reel")
@@ -432,6 +467,9 @@ async def post_reel(body: PostReelBody) -> dict:
     data = resp.get("data") or {}
     if not isinstance(data, dict):
         raise HTTPException(status_code=502, detail="invalid_response_data")
+
+    cleanup_media_file(body.videoUrl.strip())
+
     return {
         "ok": True,
         "videoId": data.get("videoId"),
@@ -473,6 +511,10 @@ async def post_photos(body: PostPhotosBody) -> dict:
     data = resp.get("data") or {}
     if not isinstance(data, dict):
         raise HTTPException(status_code=502, detail="invalid_response_data")
+
+    for u in urls:
+        cleanup_media_file(u)
+
     return {
         "ok": True,
         "postId": data.get("postId"),
@@ -489,8 +531,6 @@ async def switch_profile(body: SwitchProfileBody) -> dict:
         raise HTTPException(status_code=503, detail="extension_not_connected — load the Chrome extension")
     if not body.targetId.strip():
         raise HTTPException(status_code=400, detail="empty_targetId")
-    # The switch needs a captured CometProfileSwitchMutation (full fingerprints);
-    # a hand-built body is rejected (profile_switcher_comet_login=null).
     template = capture_store.load_template() or {}
     switch_tpl = (template.get("graphql_ops") or {}).get("CometProfileSwitchMutation")
     resp = await bridge_client.switch_profile(body.targetId.strip(), switch_tpl)
@@ -561,43 +601,9 @@ async def ext_capture(
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="capture body must be an object")
     await asyncio.to_thread(capture_store.save_capture, payload, session.extension_id)
-    # Keep the original single-extension template path working for existing MCP
-    # clients. Multi-account dashboard jobs never read this compatibility copy.
     if len(connection_registry.list()) == 1:
         await asyncio.to_thread(capture_store.save_capture, payload)
     return {"ok": True}
-
-
-# Reels and images both live in the one FBEM media dir (FBEM_MEDIA_DIR, else
-# ~/.fbem/media). The MCP stages files here before posting; the extension fetches
-# them over loopback. See fbem/bridge/config.py.
-_VIDEO_DIR = media_dir()
-_IMAGE_DIR = media_dir()
-
-
-@app.get("/local-video")
-def local_video(name: str) -> FileResponse:
-    """Serve a locally-rendered mp4 to the extension over loopback, so the
-    page-context fetch avoids cross-origin CORS. Basename-only (no traversal);
-    .mp4 only; restricted to the FBEM media dir."""
-    p = _VIDEO_DIR / Path(name).name
-    if p.suffix.lower() != ".mp4" or not p.is_file():
-        raise HTTPException(status_code=404, detail="not_found")
-    return FileResponse(str(p), media_type="video/mp4")
-
-
-_IMAGE_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}
-
-
-@app.get("/local-image")
-def local_image(name: str) -> FileResponse:
-    """Serve a locally-rendered image to the extension over loopback, so the
-    page-context fetch avoids cross-origin CORS. Basename-only (no traversal);
-    jpg/png only; restricted to the FBEM media dir."""
-    p = _IMAGE_DIR / Path(name).name
-    media = _IMAGE_TYPES.get(p.suffix.lower())
-    if not media or not p.is_file():
-        raise HTTPException(status_code=404, detail="not_found")
 
 
 # Reels and images both live in the one FBEM media dir (FBEM_MEDIA_DIR, else
