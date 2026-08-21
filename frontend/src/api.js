@@ -26,4 +26,5 @@ export const endpoints = {
   retryJob: (id) => api(`/api/jobs/${id}/retry`, { method: "POST" }),
   templateStatus: (id) => api(`/api/extensions/${encodeURIComponent(id)}/template-status`),
   extensionIdentity: (id) => api(`/api/extensions/${encodeURIComponent(id)}/identity`),
+  media: () => api("/api/media"),
 };

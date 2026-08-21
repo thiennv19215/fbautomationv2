@@ -598,6 +598,38 @@ def local_image(name: str) -> FileResponse:
     media = _IMAGE_TYPES.get(p.suffix.lower())
     if not media or not p.is_file():
         raise HTTPException(status_code=404, detail="not_found")
+
+
+# Reels and images both live in the one FBEM media dir (FBEM_MEDIA_DIR, else
+# ~/.fbem/media). The MCP stages files here before posting; the extension fetches
+# them over loopback. See fbem/bridge/config.py.
+_VIDEO_DIR = media_dir()
+_IMAGE_DIR = media_dir()
+
+
+@app.get("/local-video")
+def local_video(name: str) -> FileResponse:
+    """Serve a locally-rendered mp4 to the extension over loopback, so the
+    page-context fetch avoids cross-origin CORS. Basename-only (no traversal);
+    .mp4 only; restricted to the FBEM media dir."""
+    p = _VIDEO_DIR / Path(name).name
+    if p.suffix.lower() != ".mp4" or not p.is_file():
+        raise HTTPException(status_code=404, detail="not_found")
+    return FileResponse(str(p), media_type="video/mp4")
+
+
+_IMAGE_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}
+
+
+@app.get("/local-image")
+def local_image(name: str) -> FileResponse:
+    """Serve a locally-rendered image to the extension over loopback, so the
+    page-context fetch avoids cross-origin CORS. Basename-only (no traversal);
+    jpg/png only; restricted to the FBEM media dir."""
+    p = _IMAGE_DIR / Path(name).name
+    media = _IMAGE_TYPES.get(p.suffix.lower())
+    if not media or not p.is_file():
+        raise HTTPException(status_code=404, detail="not_found")
     return FileResponse(str(p), media_type=media)
 
 
@@ -609,3 +641,28 @@ def get_template(extensionId: str | None = None) -> dict:
         default = connection_registry.default()
         scope = default.extension_id if default else None
     return capture_store.load_template(scope) or {}
+
+
+@app.get("/api/media")
+def list_media() -> dict:
+    """List available media files in media directories."""
+    items = []
+    seen = set()
+    dirs_to_check = [_VIDEO_DIR, Path("media").resolve()]
+    for d in dirs_to_check:
+        if d.is_dir():
+            try:
+                for p in d.iterdir():
+                    if p.is_file() and p.name not in seen:
+                        ext = p.suffix.lower()
+                        if ext in {".mp4", ".mov", ".mkv", ".jpg", ".jpeg", ".png"}:
+                            seen.add(p.name)
+                            items.append({
+                                "name": p.name,
+                                "path": str(p),
+                                "size": p.stat().st_size,
+                                "kind": "video" if ext in {".mp4", ".mov", ".mkv"} else "photo",
+                            })
+            except Exception as e:
+                logger.warning(f"Error reading media dir {d}: {e}")
+    return {"items": sorted(items, key=lambda x: x["name"])}

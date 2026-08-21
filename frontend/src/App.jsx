@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity, BookOpen, Bot, CheckCircle2, ChevronRight, CircleAlert, Clock3,
-  Copy, Eye, Film, GalleryVerticalEnd, History, Images, LayoutDashboard, Menu,
+  Copy, Eye, Film, GalleryVerticalEnd, Hash, History, Images, LayoutDashboard, Menu,
   MonitorDot, Pencil, Plus, RefreshCw, RotateCcw, Search, Server, Settings2,
   ShieldCheck, Sparkles, Timer, Trash2, UserRound, UsersRound, X,
 } from "lucide-react";
@@ -1314,12 +1314,114 @@ function AccountModal({ extensions, account, close, submit }) {
   );
 }
 
+const POPULAR_HASHTAGS = ["#reels", "#xuhuong", "#viral", "#trending", "#facebookreels", "#shortvideo", "#fbem", "#fyp"];
+
+function HashtagPicker({ value, onChange }) {
+  const addTag = (tag) => {
+    const current = (value || "").trim();
+    if (!current) {
+      onChange(tag);
+    } else if (!current.includes(tag)) {
+      onChange(`${current} ${tag}`);
+    }
+  };
+
+  return (
+    <div className="hashtag-chips">
+      {POPULAR_HASHTAGS.map((tag) => (
+        <button
+          key={tag}
+          type="button"
+          className="hashtag-chip"
+          onClick={() => addTag(tag)}
+        >
+          {tag}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function MediaPicker({ kind = "video", selected, onSelect }) {
+  const [mediaList, setMediaList] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  const fetchMedia = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await endpoints.media();
+      setMediaList(res.items || []);
+    } catch {
+      setMediaList([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchMedia();
+  }, [fetchMedia]);
+
+  const filtered = useMemo(() => {
+    return mediaList.filter((m) => !kind || m.kind === kind);
+  }, [mediaList, kind]);
+
+  return (
+    <div>
+      <div className="media-select-row">
+        <select
+          value={selected || ""}
+          onChange={(e) => onSelect(e.target.value)}
+        >
+          <option value="">-- Chọn file từ thư mục media ({filtered.length} file) --</option>
+          {filtered.map((m) => (
+            <option key={m.name} value={m.name}>
+              {m.name} ({(m.size / (1024 * 1024)).toFixed(1)} MB)
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          className="icon-button"
+          onClick={fetchMedia}
+          title="Làm mới danh sách media"
+        >
+          <RefreshCw className={loading ? "spin" : ""} />
+        </button>
+      </div>
+      {filtered.length > 0 && (
+        <div className="media-chip-list">
+          {filtered.slice(0, 6).map((m) => (
+            <button
+              key={m.name}
+              type="button"
+              className={`media-chip ${selected === m.name ? "active" : ""}`}
+              onClick={() => onSelect(m.name)}
+            >
+              <Film /> {m.name}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ScriptModal({ script, close, submit }) {
+  const initialConfig = script?.config || {};
+  const [mode, setMode] = useState("visual");
   const [form, setForm] = useState({
     name: script?.name || "",
     description: script?.description || "",
     kind: script?.kind || "post_reel",
     enabled: script?.enabled ?? true,
+    videoUrl: initialConfig.videoUrl || "",
+    imageUrls: Array.isArray(initialConfig.imageUrls)
+      ? initialConfig.imageUrls.join("\n")
+      : initialConfig.imageUrls || "",
+    caption: initialConfig.caption || "Nội dung cho {{account_name}} ngày {{date}}",
+    hashtags: initialConfig.hashtags || "#reels #xuhuong",
+    pageId: initialConfig.pageId || "",
     configText: script
       ? JSON.stringify(script.config || {}, null, 2)
       : '{\n  "caption": "Nội dung cho {{account_name}} ngày {{date}}"\n}',
@@ -1328,9 +1430,51 @@ function ScriptModal({ script, close, submit }) {
 
   const send = (e) => {
     e.preventDefault();
-    try {
-      const config = JSON.parse(form.configText);
-      setJsonError("");
+    if (mode === "json") {
+      try {
+        const config = JSON.parse(form.configText);
+        setJsonError("");
+        submit({
+          name: form.name,
+          description: form.description,
+          kind: form.kind,
+          config,
+          enabled: form.enabled,
+        });
+      } catch {
+        setJsonError("JSON không hợp lệ. Vui lòng kiểm tra dấu ngoặc và dấu phẩy.");
+      }
+    } else {
+      let fullCaption = form.caption.trim();
+      if (form.hashtags.trim()) {
+        fullCaption = fullCaption ? `${fullCaption}\n\n${form.hashtags.trim()}` : form.hashtags.trim();
+      }
+
+      let config = {};
+      if (form.kind === "post_reel") {
+        config = {
+          videoUrl: form.videoUrl.trim(),
+          caption: fullCaption,
+        };
+      } else if (form.kind === "post_photos") {
+        const urls = form.imageUrls
+          .split("\n")
+          .map((u) => u.trim())
+          .filter(Boolean);
+        config = {
+          imageUrls: urls,
+          caption: fullCaption,
+        };
+      } else if (form.kind === "switch_profile") {
+        config = {
+          targetId: form.pageId.trim(),
+        };
+      }
+
+      if (form.pageId.trim() && form.kind !== "switch_profile") {
+        config.pageId = form.pageId.trim();
+      }
+
       submit({
         name: form.name,
         description: form.description,
@@ -1338,14 +1482,12 @@ function ScriptModal({ script, close, submit }) {
         config,
         enabled: form.enabled,
       });
-    } catch {
-      setJsonError("JSON không hợp lệ. Vui lòng kiểm tra dấu ngoặc và dấu phẩy.");
     }
   };
 
   return (
     <Modal
-      title={script ? "Chỉnh sửa kịch bản" : "Tạo kịch bản"}
+      title={script ? "Chỉnh sửa kịch bản" : "Tạo kịch bản mới"}
       subtitle="Kịch bản tái sử dụng cấu hình và hỗ trợ biến động {{account_name}}, {{date}}."
       onClose={close}
     >
@@ -1391,15 +1533,134 @@ function ScriptModal({ script, close, submit }) {
             placeholder="Mục đích và cách dùng kịch bản..."
           />
         </Field>
-        <Field label="Cấu hình JSON">
-          <textarea
-            className="code-input"
-            value={form.configText}
-            onChange={(e) => setForm({ ...form, configText: e.target.value })}
-          />
-          {jsonError && <small className="field-error">{jsonError}</small>}
-          <small>Biến hỗ trợ: {"{{account_name}}"}, {"{{facebook_id}}"}, {"{{date}}"}</small>
-        </Field>
+
+        <div className="segmented">
+          <button
+            type="button"
+            className={mode === "visual" ? "active" : ""}
+            onClick={() => setMode("visual")}
+          >
+            Form Trực quan (Dễ dùng)
+          </button>
+          <button
+            type="button"
+            className={mode === "json" ? "active" : ""}
+            onClick={() => {
+              let fullCaption = form.caption.trim();
+              if (form.hashtags.trim()) {
+                fullCaption = fullCaption ? `${fullCaption}\n\n${form.hashtags.trim()}` : form.hashtags.trim();
+              }
+              const cfg =
+                form.kind === "post_reel"
+                  ? { videoUrl: form.videoUrl, caption: fullCaption, ...(form.pageId ? { pageId: form.pageId } : {}) }
+                  : form.kind === "post_photos"
+                  ? { imageUrls: form.imageUrls.split("\n").filter(Boolean), caption: fullCaption }
+                  : { targetId: form.pageId };
+              setForm((f) => ({ ...f, configText: JSON.stringify(cfg, null, 2) }));
+              setMode("json");
+            }}
+          >
+            Cấu hình JSON nâng cao
+          </button>
+        </div>
+
+        {mode === "visual" ? (
+          <>
+            {form.kind === "post_reel" && (
+              <Field label="File Video (.mp4 / Chọn từ media hoặc nhập đường dẫn)">
+                <input
+                  required
+                  value={form.videoUrl}
+                  onChange={(e) => setForm({ ...form, videoUrl: e.target.value })}
+                  placeholder="Ví dụ: clip1.mp4 hoặc C:/Videos/clip1.mp4"
+                />
+                <MediaPicker
+                  kind="video"
+                  selected={form.videoUrl}
+                  onSelect={(file) => setForm({ ...form, videoUrl: file })}
+                />
+              </Field>
+            )}
+
+            {form.kind === "post_photos" && (
+              <Field label="Danh sách file ảnh (mỗi file 1 dòng)">
+                <textarea
+                  required
+                  value={form.imageUrls}
+                  onChange={(e) => setForm({ ...form, imageUrls: e.target.value })}
+                  placeholder="photo1.jpg&#10;photo2.png"
+                  rows={3}
+                />
+                <MediaPicker
+                  kind="photo"
+                  onSelect={(file) =>
+                    setForm((f) => ({
+                      ...f,
+                      imageUrls: f.imageUrls ? `${f.imageUrls}\n${file}` : file,
+                    }))
+                  }
+                />
+              </Field>
+            )}
+
+            {form.kind !== "switch_profile" && (
+              <>
+                <Field label="Nội dung Caption bài đăng">
+                  <textarea
+                    required
+                    value={form.caption}
+                    onChange={(e) => setForm({ ...form, caption: e.target.value })}
+                    placeholder="Nhập nội dung bài đăng..."
+                    rows={3}
+                  />
+                  <small>Biến hỗ trợ: {"{{account_name}}"}, {"{{facebook_id}}"}, {"{{date}}"}</small>
+                </Field>
+
+                <Field label="Hashtags (Gắn thẻ xu hướng)">
+                  <input
+                    value={form.hashtags}
+                    onChange={(e) => setForm({ ...form, hashtags: e.target.value })}
+                    placeholder="Ví dụ: #reels #xuhuong #fbem"
+                  />
+                  <HashtagPicker
+                    value={form.hashtags}
+                    onChange={(tags) => setForm({ ...form, hashtags: tags })}
+                  />
+                </Field>
+
+                <Field label="ID Fanpage đăng bài (Tùy chọn)">
+                  <input
+                    value={form.pageId}
+                    onChange={(e) => setForm({ ...form, pageId: e.target.value })}
+                    placeholder="Để trống nếu đăng bằng chính tài khoản hiện tại"
+                  />
+                </Field>
+              </>
+            )}
+
+            {form.kind === "switch_profile" && (
+              <Field label="ID Fanpage / Profile cần chuyển sang">
+                <input
+                  required
+                  value={form.pageId}
+                  onChange={(e) => setForm({ ...form, pageId: e.target.value })}
+                  placeholder="Nhập Facebook ID của Page mục tiêu"
+                />
+              </Field>
+            )}
+          </>
+        ) : (
+          <Field label="Cấu hình JSON">
+            <textarea
+              className="code-input"
+              value={form.configText}
+              onChange={(e) => setForm({ ...form, configText: e.target.value })}
+            />
+            {jsonError && <small className="field-error">{jsonError}</small>}
+            <small>Biến hỗ trợ: {"{{account_name}}"}, {"{{facebook_id}}"}, {"{{date}}"}</small>
+          </Field>
+        )}
+
         <ModalActions close={close} label={script ? "Lưu phiên bản mới" : "Tạo kịch bản"} />
       </form>
     </Modal>
@@ -1412,8 +1673,13 @@ function JobModal({ accounts, scripts, initialAccount, close, submit }) {
     accountIds: initialAccount ? [initialAccount] : enabled[0] ? [enabled[0].id] : [],
     mode: scripts.some((s) => s.enabled) ? "script" : "direct",
     scriptId: scripts.find((s) => s.enabled)?.id || "",
-    kind: "get_identity",
+    kind: "post_reel",
+    videoUrl: "",
+    caption: "",
+    hashtags: "#reels #xuhuong",
+    pageId: "",
     inputText: "{}",
+    useJsonOverride: false,
     scheduled: "",
   });
   const [jsonError, setJsonError] = useState("");
@@ -1429,9 +1695,30 @@ function JobModal({ accounts, scripts, initialAccount, close, submit }) {
   const send = (e) => {
     e.preventDefault();
     try {
-      const input = JSON.parse(form.inputText);
-      if (form.scheduled)
+      let input = {};
+      if (form.useJsonOverride) {
+        input = JSON.parse(form.inputText);
+      } else if (form.mode === "direct") {
+        let fullCaption = form.caption.trim();
+        if (form.hashtags.trim()) {
+          fullCaption = fullCaption ? `${fullCaption}\n\n${form.hashtags.trim()}` : form.hashtags.trim();
+        }
+        if (form.kind === "post_reel") {
+          input = { videoUrl: form.videoUrl.trim(), caption: fullCaption };
+        } else if (form.kind === "post_photos") {
+          input = { imageUrls: [form.videoUrl.trim()], caption: fullCaption };
+        } else if (form.kind === "switch_profile") {
+          input = { targetId: form.pageId.trim() };
+        }
+        if (form.pageId.trim() && form.kind !== "switch_profile") {
+          input.pageId = form.pageId.trim();
+        }
+      }
+
+      if (form.scheduled) {
         input.scheduledPublishTime = Math.floor(new Date(form.scheduled).getTime() / 1000);
+      }
+
       setJsonError("");
       submit({
         accountIds: form.accountIds,
@@ -1521,38 +1808,96 @@ function JobModal({ accounts, scripts, initialAccount, close, submit }) {
             </select>
           </Field>
         ) : (
-          <Field label="Loại tác vụ">
-            <select
-              value={form.kind}
-              onChange={(e) => setForm({ ...form, kind: e.target.value })}
-            >
-              {Object.entries(KIND_LABEL).map(([key, label]) => (
-                <option key={key} value={key}>
-                  {label}
-                </option>
-              ))}
-            </select>
-          </Field>
+          <>
+            <Field label="Loại tác vụ">
+              <select
+                value={form.kind}
+                onChange={(e) => setForm({ ...form, kind: e.target.value })}
+              >
+                {Object.entries(KIND_LABEL).map(([key, label]) => (
+                  <option key={key} value={key}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+
+            {form.kind === "post_reel" && (
+              <Field label="File Video (.mp4 / media)">
+                <input
+                  required={!form.useJsonOverride}
+                  value={form.videoUrl}
+                  onChange={(e) => setForm({ ...form, videoUrl: e.target.value })}
+                  placeholder="Ví dụ: clip1.mp4 hoặc C:/Videos/clip1.mp4"
+                />
+                <MediaPicker
+                  kind="video"
+                  selected={form.videoUrl}
+                  onSelect={(file) => setForm({ ...form, videoUrl: file })}
+                />
+              </Field>
+            )}
+
+            {form.kind !== "switch_profile" && form.kind !== "get_identity" && (
+              <>
+                <Field label="Nội dung Caption">
+                  <textarea
+                    required={!form.useJsonOverride}
+                    value={form.caption}
+                    onChange={(e) => setForm({ ...form, caption: e.target.value })}
+                    placeholder="Nhập caption bài đăng..."
+                    rows={3}
+                  />
+                </Field>
+
+                <Field label="Hashtags">
+                  <input
+                    value={form.hashtags}
+                    onChange={(e) => setForm({ ...form, hashtags: e.target.value })}
+                    placeholder="Ví dụ: #reels #xuhuong #fbem"
+                  />
+                  <HashtagPicker
+                    value={form.hashtags}
+                    onChange={(tags) => setForm({ ...form, hashtags: tags })}
+                  />
+                </Field>
+              </>
+            )}
+          </>
         )}
 
-        <Field label="Thời gian Facebook xuất bản (không bắt buộc)">
+        <Field label="Thời gian Facebook xuất bản (Hẹn giờ đăng)">
           <input
             type="datetime-local"
             value={form.scheduled}
             onChange={(e) => setForm({ ...form, scheduled: e.target.value })}
           />
-          <small>Job vẫn chạy ngay để gửi lệnh hẹn giờ lên lịch sang Facebook.</small>
+          <small>Chọn ngày giờ để Facebook tự động lên lịch xuất bản đúng giờ đó.</small>
         </Field>
 
-        <Field label="Input / Ghi đè cấu hình JSON">
-          <textarea
-            className="code-input"
-            value={form.inputText}
-            onChange={(e) => setForm({ ...form, inputText: e.target.value })}
+        <div className="toggle-row">
+          <div>
+            <b>Cấu hình JSON nâng cao</b>
+            <span>Bật nếu bạn muốn tự viết JSON ghi đè payload</span>
+          </div>
+          <input
+            type="checkbox"
+            checked={form.useJsonOverride}
+            onChange={(e) => setForm({ ...form, useJsonOverride: e.target.checked })}
           />
-          {jsonError && <small className="field-error">{jsonError}</small>}
-          <small>Reel: videoUrl, caption · Ảnh: imageUrls, caption · Switch: targetId</small>
-        </Field>
+        </div>
+
+        {form.useJsonOverride && (
+          <Field label="Input / Ghi đè cấu hình JSON">
+            <textarea
+              className="code-input"
+              value={form.inputText}
+              onChange={(e) => setForm({ ...form, inputText: e.target.value })}
+            />
+            {jsonError && <small className="field-error">{jsonError}</small>}
+            <small>Reel: videoUrl, caption · Ảnh: imageUrls, caption · Switch: targetId</small>
+          </Field>
+        )}
 
         {!enabled.length && (
           <div className="warning-note">

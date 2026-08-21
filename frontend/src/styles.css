@@ -79,3 +79,17 @@
 .timeline-info-grid span{display:block;font-size:8px;color:var(--muted);margin-bottom:2px}
 .timeline-info-grid small{font-size:9px;font-weight:700;color:#1e293b}
 
+/* ─── Media Picker & Visual Form Helpers ────────────────── */
+.media-picker-bar{display:flex;gap:6px;align-items:center;margin-top:6px}
+.media-select-row{display:flex;gap:8px;align-items:center;width:100%}
+.media-chip-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.media-chip{display:inline-flex;align-items:center;gap:5px;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:8px;padding:4px 9px;font-size:10px;font-weight:600;color:#334155;cursor:pointer;transition:all .15s}
+.media-chip:hover{background:#e0e7ff;border-color:#c7d2fe;color:#3730a3}
+.media-chip.active{background:#2563eb;color:#fff;border-color:#2563eb}
+.media-chip svg{width:12px;height:12px}
+.hashtag-chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
+.hashtag-chip{background:#eff6ff;color:#2563eb;border:1px solid #bfdbfe;border-radius:6px;padding:3px 8px;font-size:9px;font-weight:700;cursor:pointer;transition:all .15s}
+.hashtag-chip:hover{background:#2563eb;color:#fff;border-color:#2563eb}
+.section-divider{border-top:1px dashed #e2e8f0;margin:14px 0 10px}
+
+
