@@ -120,17 +120,6 @@ function connectToAgent() {
   try {
     ws = new WebSocket(AGENT_WS_URL);
   } catch (e) {
-
-// ─── WebSocket to Agent ─────────────────────────────────────
-
-function connectToAgent() {
-  if (manualDisconnect) return;
-  if (ws?.readyState === WebSocket.CONNECTING) return;
-  if (ws?.readyState === WebSocket.OPEN) return;
-
-  try {
-    ws = new WebSocket(AGENT_WS_URL);
-  } catch (e) {
     console.error('[FBBridge] WS connect error:', e);
     scheduleReconnect();
     return;
@@ -142,6 +131,74 @@ function connectToAgent() {
     ws.send(JSON.stringify({ type: 'hello', extensionId, version: chrome.runtime.getManifest().version }));
     ws.send(JSON.stringify({ type: 'fb_ready', extensionId }));
     setTimeout(reportIdentity, 1500);
+  };
+
+  ws.onmessage = async ({ data }) => {
+    try {
+      const msg = JSON.parse(data);
+
+      if (msg.type === 'callback_secret') {
+        callbackSecret = msg.secret;
+        chrome.storage.local.set({ callbackSecret: msg.secret });
+        console.log('[FBBridge] Received callback secret');
+        return;
+      }
+      if (msg.type === 'pong') {
+        return;
+      }
+
+      if (msg.method === 'post_reel') {
+        postInFlight++;
+        try { await handlePostReel(msg); } finally { postInFlight--; }
+        return;
+      }
+      if (msg.method === 'post_photos') {
+        postInFlight++;
+        try { await handlePostPhotos(msg); } finally { postInFlight--; }
+        return;
+      }
+      if (msg.method === 'switch_profile') {
+        postInFlight++;
+        try { await handleSwitchProfile(msg); } finally { postInFlight--; }
+        return;
+      }
+      if (msg.method === 'get_identity') {
+        await handleGetIdentity(msg);
+        return;
+      }
+      if (msg.method === 'scan_pages') {
+        await handleScanPages(msg);
+        return;
+      }
+    } catch (e) {
+      console.error('[FBBridge] Message error:', e);
+    }
+  };
+
+  ws.onclose = () => {
+    if (!manualDisconnect) scheduleReconnect();
+  };
+
+  ws.onerror = (e) => {
+    console.error('[FBBridge] WS error:', e);
+  };
+}
+
+function scheduleReconnect() {
+  chrome.alarms.create('reconnect', { delayInMinutes: 0.083 }); // ~5 s
+}
+
+function keepAlive() {
+  if (ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'ping' }));
+  } else {
+    connectToAgent();
+  }
+}
+
+// ─── Send to Agent ──────────────────────────────────────────
+
+/**
  * Route a message to the agent.
  * Responses (msg.id present) go via HTTP callback — immune to WS drops.
  * Falls back to WS on HTTP failure. Non-response messages use WS directly.
@@ -184,26 +241,13 @@ function postCapture(payload) {
 }
 
 // ─── rupload capture via webRequest ─────────────────────────
-// FB uploads the reel video in a Web Worker, whose fetch/XHR the page-world
-// crawler can't see. webRequest observes ALL contexts (page, worker, iframe)
-// and gives us the request headers — which is the whole template we need; the
-// bytes are supplied by us at replay.
-//
-// NOTE: the 1500ms burst-throttle is REMOVED so we capture EVERY rupload request
-// of a real manual upload — this reveals whether FB chunks the upload (multiple
-// POSTs with incrementing offset/start_offset/end_offset) and the real
-// X-Entity-Name, which is exactly what we need to diff against our replay.
 const UPLOAD_URL_RE = /rupload|upload|video-upload|\/video\/|media.*upload|entity/i;
 chrome.webRequest.onBeforeSendHeaders.addListener(
   (details) => {
     try {
       const u = details.url || '';
-      if (details.method === 'OPTIONS') return; // skip CORS preflight; we want the real upload
+      if (details.method === 'OPTIONS') return;
       if (/\/api\/graphql\//i.test(u)) return;
-      // The native photo composer POSTs to .../react_composer/attachments/photo/upload,
-      // whose URL contains "upload" and would otherwise be tagged `rupload` and
-      // clobber the reel video-transfer slot. That request is captured separately
-      // as `photo_upload` by the page-world crawler, so skip it here.
       if (/\/react_composer\/attachments\/photo\//i.test(u)) return;
       if (!UPLOAD_URL_RE.test(u)) return;
       const headers = {};
@@ -235,13 +279,8 @@ function arrayBufferToBase64(buf) {
   return btoa(binary);
 }
 
-// When each tab was last hard-reloaded+settled BY US (reloadTabAndWait). A post
-// that immediately follows a switch_profile — which already reloaded the tab —
-// uses this to skip a second back-to-back reload: two reloads in a row churn the
-// page and can tear down the content script mid-upload (the "message channel
-// closed" failure). Keyed by tabId → epoch ms.
 const lastReloadAt = new Map();
-const RELOAD_FRESH_MS = 15000; // a reload within this window counts as still-fresh
+const RELOAD_FRESH_MS = 15000;
 
 function tabIsFresh(tabId) {
   const t = lastReloadAt.get(tabId);
@@ -249,20 +288,14 @@ function tabIsFresh(tabId) {
 }
 
 // Reload a tab and wait until it finishes loading + its scripts re-initialise.
-// Done before every upload (by request) so each post starts from a guaranteed-
-// fresh page: avoids "Extension context invalidated" on an orphaned content
-// script and guarantees fresh fb_dtsg/lsd tokens. ~ a few seconds of latency.
 async function reloadTabAndWait(tabId, settleMs = 3000, navigateUrl = null) {
   try {
-    // navigateUrl set → go to that URL (changes the address bar, clean identity
-    // context, e.g. facebook.com home after a profile switch). Else reload in place.
     if (navigateUrl) await chrome.tabs.update(tabId, { url: navigateUrl });
     else await chrome.tabs.reload(tabId);
   } catch (e) {
     console.warn('[FBBridge] tab reload/navigate failed:', e?.message || e);
     return;
   }
-  // Wait for status === 'complete' (event + poll fallback, 30s cap).
   await new Promise((resolve) => {
     let done = false;
     const finish = () => {
@@ -282,18 +315,13 @@ async function reloadTabAndWait(tabId, settleMs = 3000, navigateUrl = null) {
       } catch (_) { finish(); }
     }, 500);
   });
-  // Let content.js inject injected.js and FB page JS boot (tokens, composer cfg).
   await new Promise((r) => setTimeout(r, settleMs));
-  // The tab just (re)loaded — anchor the freshness TTL so /api/health doesn't drift
-  // 'stale' even when a steadily-posting bridge keeps the tab fresh via this path.
   sendLastActive();
-  // Record the reload so an immediately-following post can skip a redundant reload.
   lastReloadAt.set(tabId, Date.now());
 }
 
 // ─── identity helpers (page_id auto-switch) ────────────────
 
-// Ask the page which identity (page/profile id) the tab currently posts AS.
 async function queryIdentity(tabId) {
   try {
     const r = await chrome.tabs.sendMessage(tabId, { type: 'get_identity', id: 'auto_' + Date.now() });
@@ -303,10 +331,6 @@ async function queryIdentity(tabId) {
   }
 }
 
-// Honor a post's page_id: ensure the tab is acting AS that page, auto-switching if
-// needed. Returns {ok:true} once acting as pageId, else {ok:false,error} — so we
-// NEVER silently post to the wrong page. The switch needs a captured
-// CometProfileSwitchMutation (switchTemplate), forwarded by the bridge.
 async function ensureActingAs(tab, pageId, switchTemplate) {
   const current = await queryIdentity(tab.id);
   if (current && current === String(pageId)) return { ok: true };
@@ -324,7 +348,6 @@ async function ensureActingAs(tab, pageId, switchTemplate) {
     return { ok: false, error: `page_switch_failed: ${e?.message || e}` };
   }
   if (!sw || !sw.ok) return { ok: false, error: (sw && sw.error) || 'page_switch_failed' };
-  // The new identity's tokens load only after a reload (navigate home for clean ctx).
   await reloadTabAndWait(tab.id, 3000, 'https://www.facebook.com/');
   const after = await queryIdentity(tab.id);
   if (!after || after !== String(pageId)) {
@@ -335,40 +358,21 @@ async function ensureActingAs(tab, pageId, switchTemplate) {
 
 // ─── post_reel: forward to a facebook.com tab ───────────────
 
-/**
- * Find an active, logged-in facebook.com tab and forward the post_reel
- * request to its content script. The content script (and the main-world
- * injected script it bridges to) performs the actual native upload+publish.
- */
 async function handlePostReel(msg) {
   const { id, params } = msg;
-
   const tab = await findFbTab();
-
   if (!tab) {
     sendToAgent({ id, status: 503, error: 'no_facebook_tab' });
     return;
   }
 
-  // Honor page_id: make the tab act AS the requested page before posting (else we
-  // would silently post as whatever identity the tab currently holds).
   if (params.pageId) {
     const acting = await ensureActingAs(tab, params.pageId, params.switchTemplate);
     if (!acting.ok) { sendToAgent({ id, status: 502, error: acting.error }); return; }
   }
 
-  // Reload the FB tab first (by request) so every upload starts from a fresh page —
-  // UNLESS it was just reloaded (e.g. by the preceding switch_profile / ensureActingAs).
-  // A second back-to-back reload churns the page and can destroy the content script
-  // mid-upload, which surfaces as "message channel closed". The recent reload already
-  // gave us fresh fb_dtsg/lsd tokens.
   if (!tabIsFresh(tab.id)) await reloadTabAndWait(tab.id);
 
-  // Fetch the video HERE in the service worker, not in the page. The page is
-  // https://facebook.com; fetching the http://127.0.0.1 loopback URL from page
-  // context is blocked/hung by mixed-content + Private Network Access.
-  // The SW has host_permissions for that host and is exempt, so we fetch the
-  // bytes and hand them to the injected replay as base64.
   let videoB64 = null;
   try {
     const r = await fetch(params.videoUrl);
@@ -383,7 +387,6 @@ async function handlePostReel(msg) {
   }
 
   try {
-    // The content script replies asynchronously with the upload result.
     const result = await chrome.tabs.sendMessage(tab.id, {
       type: 'post_reel',
       id,
@@ -408,7 +411,6 @@ async function handlePostReel(msg) {
     }
   } catch (e) {
     const m = e?.message || '';
-    // Content script not reachable → treat as no usable FB tab.
     if (
       m.includes('Receiving end does not exist') ||
       m.includes('Could not establish connection') ||
@@ -423,32 +425,19 @@ async function handlePostReel(msg) {
 
 // ─── post_photos: forward to a facebook.com tab ─────────────
 
-/**
- * Native photo / album post. Like handlePostReel, but fetches N images in the
- * service worker (loopback / R2 fetches are blocked from page context) and hands
- * them to the injected replay as a base64 array. One ComposerStoryCreateMutation
- * publishes a single photo or a multi-photo album.
- */
 async function handlePostPhotos(msg) {
   const { id, params } = msg;
-
   const tab = await findFbTab();
   if (!tab) {
     sendToAgent({ id, status: 503, error: 'no_facebook_tab' });
     return;
   }
 
-  // Honor page_id: make the tab act AS the requested page before posting.
   if (params.pageId) {
     const acting = await ensureActingAs(tab, params.pageId, params.switchTemplate);
     if (!acting.ok) { sendToAgent({ id, status: 502, error: acting.error }); return; }
   }
 
-  // Reload the FB tab first (by request) so every upload starts from a fresh page —
-  // UNLESS it was just reloaded (e.g. by the preceding switch_profile / ensureActingAs).
-  // A second back-to-back reload churns the page and can destroy the content script
-  // mid-upload, which surfaces as "message channel closed". The recent reload already
-  // gave us fresh fb_dtsg/lsd tokens.
   if (!tabIsFresh(tab.id)) await reloadTabAndWait(tab.id);
 
   const urls = Array.isArray(params.imageUrls) ? params.imageUrls : [];
@@ -457,7 +446,6 @@ async function handlePostPhotos(msg) {
     return;
   }
 
-  // Fetch every image HERE (SW is exempt from mixed-content / PNA) → base64.
   let imagesB64 = [];
   try {
     for (const u of urls) {
@@ -514,14 +502,8 @@ async function handlePostPhotos(msg) {
 
 // ─── switch_profile: change active identity, then reload ────
 
-/**
- * Switch the logged-in session to a target profile/page (CometProfileSwitchMutation
- * runs in the page with the CURRENT identity's tokens), then reload the tab so the
- * NEW identity's fb_dtsg/__user load. After this, posts go out as the target page.
- */
 async function handleSwitchProfile(msg) {
   const { id, params } = msg;
-
   const tab = await findFbTab();
   if (!tab) {
     sendToAgent({ id, status: 503, error: 'no_facebook_tab' });
@@ -529,33 +511,13 @@ async function handleSwitchProfile(msg) {
   }
 
   try {
-    // Switch must run with the CURRENT identity → do NOT reload before it.
     const result = await chrome.tabs.sendMessage(tab.id, { type: 'switch_profile', id, params });
     if (result && result.ok) {
-      // After switch: navigate to facebook.com home so the URL reflects the new
-      // identity and the page loads cleanly with the new identity's tokens.
       await reloadTabAndWait(tab.id, 3000, 'https://www.facebook.com/');
-      // Confirm the new identity actually took effect post-reload before reporting
-      // success — the mutation can succeed while the cookie flip races the reload.
       const after = await queryIdentity(tab.id);
       if (after && String(after) === String(params.targetId)) {
         reportIdentity();
         sendToAgent({ id, status: 200, data: { identityId: result.identityId, identityName: result.identityName } });
-      } else {
-        sendToAgent({ id, status: 502, error: `switch_unverified: tab acts as ${after || 'unknown'} after switching to ${params.targetId}` });
-      }
-    } else {
-      sendToAgent({ id, status: 500, error: (result && result.error) || 'switch_failed' });
-    }
-  } catch (e) {
-    const m = e?.message || '';
-    if (
-      m.includes('Receiving end does not exist') ||
-      m.includes('Could not establish connection') ||
-      m.includes('No tab with id')
-    ) {
-      sendToAgent({ id, status: 503, error: 'no_facebook_tab' });
-    } else {
       } else {
         sendToAgent({ id, status: 502, error: `switch_unverified: tab acts as ${after || 'unknown'} after switching to ${params.targetId}` });
       }
@@ -578,7 +540,6 @@ async function handleSwitchProfile(msg) {
 
 // ─── get_identity: read the current acting page/profile (no switch) ──
 
-/** Ask the FB tab for the identity it currently posts AS (id + best-effort name). */
 async function handleGetIdentity(msg) {
   const { id } = msg;
   const tab = await findFbTab();
