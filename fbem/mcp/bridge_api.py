@@ -40,7 +40,7 @@ def _detail(resp: httpx.Response) -> str:
 
 async def _get(path: str, timeout: float = 5.0) -> dict:
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
             resp = await client.get(f"{base_url()}{path}")
     except httpx.HTTPError as exc:
         raise BridgeError(
@@ -53,7 +53,7 @@ async def _get(path: str, timeout: float = 5.0) -> dict:
 
 async def _post(path: str, body: dict, timeout: float) -> dict:
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
             resp = await client.post(f"{base_url()}{path}", json=body)
     except httpx.HTTPError as exc:
         raise BridgeError(
