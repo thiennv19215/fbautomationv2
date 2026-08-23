@@ -312,6 +312,12 @@ def retry_job(item_id: str) -> bool:
             WHERE id=? AND status IN ('failed','cancelled')""", (item_id,)).rowcount)
 
 
+def clear_jobs() -> int:
+    """Clear all jobs from the SQLite database."""
+    with _connect() as db:
+        return db.execute("DELETE FROM jobs").rowcount
+
+
 def delete_account(item_id: str) -> tuple[bool, str | None]:
     with _connect() as db:
         active = db.execute("SELECT 1 FROM jobs WHERE account_id=? AND status IN ('queued','running','waiting_connection') LIMIT 1", (item_id,)).fetchone()

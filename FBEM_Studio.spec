@@ -4,9 +4,12 @@ from PyInstaller.utils.hooks import collect_all
 datas = [('fbem/bridge/static', 'fbem/bridge/static'), ('extension', 'extension')]
 binaries = []
 hiddenimports = []
-tmp_ret = collect_all('webview')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
+for pkg in ['webview', 'uvicorn', 'fastapi', 'websockets', 'starlette', 'fbem']:
+    tmp_ret = collect_all(pkg)
+    datas += tmp_ret[0]
+    binaries += tmp_ret[1]
+    hiddenimports += tmp_ret[2]
 
 a = Analysis(
     ['fbem_app.py'],

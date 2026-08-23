@@ -1,0 +1,45 @@
+{
+  "name": "fbem-studio",
+  "version": "1.0.0",
+  "description": "⚡ FBEM Studio — Facebook Automation Desktop Application",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "build:frontend": "cd frontend && npm run build",
+    "dev": "electron . --dev",
+    "dist": "electron-builder --win"
+  },
+  "keywords": [
+    "facebook",
+    "automation",
+    "electron",
+    "mcp"
+  ],
+  "author": "FBEM Team",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.fbem.studio",
+    "productName": "FBEM Studio",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "FBEM Studio"
+    },
+    "files": [
+      "electron/**/*",
+      "fbem/**/*",
+      "extension/**/*",
+      "package.json"
+    ]
+  }
+}

@@ -1,5 +1,5 @@
 @echo off
-title FBEM Studio - Facebook Automation Bridge
+title FBEM Studio - Facebook Automation
 chcp 65001 > nul
 cls
 
@@ -7,20 +7,54 @@ echo =======================================================
 echo          ⚡ FBEM STUDIO - FACEBOOK AUTOMATION
 echo =======================================================
 echo.
-echo  [1/3] Đang khởi động các Profile Chrome chạy ngầm...
-powershell -Command "if (Test-Path '$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe') { $c = '$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe' } elseif (Test-Path 'C:\Program Files\Google\Chrome\Application\chrome.exe') { $c = 'C:\Program Files\Google\Chrome\Application\chrome.exe' } else { $c = 'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe' }; if (Test-Path $c) { Start-Process $c -ArgumentList '--profile-directory=Default', '--no-first-run', 'https://www.facebook.com/' -WindowStyle Minimized }" > nul 2>&1
 
-echo  [2/3] Đang mở giao diện Web Dashboard tại http://127.0.0.1:47102/
-start "" "http://127.0.0.1:47102/"
+echo [*] Đang dọn dẹp và giải phóng các cổng kết nối cũ (:47102 & :9224)...
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr :47102 ^| findstr LISTENING 2^>nul') do (
+    taskkill /PID %%a /F /T >nul 2>&1
+)
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr :9224 ^| findstr LISTENING 2^>nul') do (
+    taskkill /PID %%a /F /T >nul 2>&1
+)
 
-echo  [3/3] Đang khởi động Server Bridge & Telegram Bot...
-echo.
-echo  =======================================================
-echo  Mọi Profile Chrome & Bot Telegram đã sẵn sàng hoạt động!
-echo  (Để dừng hệ thống, bạn chỉ cần đóng cửa sổ này).
-echo  =======================================================
-echo.
+:: Check if Electron is installed and ready
+if exist "node_modules\electron" (
+    echo [*] Đang khởi động FBEM Studio qua Electron Desktop App...
+    npm start
+    if %ERRORLEVEL% equ 0 exit /b 0
+)
 
-uv run python -m fbem.bridge
+:: Fallback to Python Desktop / Browser
+echo [*] Electron chưa sẵn sàng, đang chuyển sang Python Native App...
 
-pause
+set "PY_CMD="
+if exist ".venv\Scripts\python.exe" (
+    set "PY_CMD=.venv\Scripts\python.exe"
+) else (
+    where uv >nul 2>nul
+    if %ERRORLEVEL% equ 0 (
+        set "PY_CMD=uv run python"
+    ) else (
+        where python >nul 2>nul
+        if %ERRORLEVEL% equ 0 (
+            set "PY_CMD=python"
+        )
+    )
+)
+
+if "%PY_CMD%"=="" (
+    echo [!] Lỗi: Không tìm thấy Python hoặc môi trường ảo .venv!
+    echo Vui lòng cài đặt Python hoặc chạy 'uv sync' trước.
+    echo.
+    pause
+    exit /b 1
+)
+
+%PY_CMD% fbem_app.py
+
+if %ERRORLEVEL% neq 0 (
+    echo.
+    echo [!] Ứng dụng đã thoát với mã lỗi %ERRORLEVEL%.
+    pause
+)
+
+

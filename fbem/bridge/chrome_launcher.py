@@ -38,11 +38,30 @@ def get_chrome_profiles() -> list[str]:
     return profiles or ["Default"]
 
 
+def is_profile_running(profile_dir: str) -> bool:
+    """Check if Chrome is already running with the specified profile directory."""
+    if os.name != "nt":
+        return False
+    try:
+        cmd = f'powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"name=\'chrome.exe\'\\" | Select-Object -ExpandProperty CommandLine"'
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=2.5, shell=True)
+        if res.returncode == 0 and res.stdout:
+            target_flag = f"--profile-directory={profile_dir}"
+            return target_flag.lower() in res.stdout.lower()
+    except Exception:
+        pass
+    return False
+
+
 def launch_profile_background(profile_dir: str = "Default", url: str = "https://www.facebook.com/", is_secondary: bool = False) -> bool:
     """Launch a single Chrome profile in minimized background mode.
     
-    If is_secondary is True, positions window off-screen (-32000, -32000) so it is 100% invisible.
+    Skips if profile is already running to avoid duplicate tabs/processes.
     """
+    if is_profile_running(profile_dir):
+        logger.info("chrome profile '%s' is already running, skipping duplicate launch", profile_dir)
+        return True
+
     chrome_exe = find_chrome_executable()
     if not chrome_exe:
         logger.warning("chrome.exe not found")
@@ -53,17 +72,23 @@ def launch_profile_background(profile_dir: str = "Default", url: str = "https://
         f"--profile-directory={profile_dir}",
         "--no-first-run",
         "--no-default-browser-check",
+        "--disable-gpu",
+        "--disable-software-rasterizer",
+        "--disable-background-networking",
+        "--disable-sync",
+        "--disable-translate",
+        "--disk-cache-size=10485760",
+        "--media-cache-size=10485760",
     ]
     if is_secondary:
-        # Hide off-screen so user doesn't see secondary via windows
-        cmd.extend(["--window-position=-32000,-32000", "--window-size=600,600"])
+        cmd.extend(["--window-position=-32000,-32000", "--window-size=600,600", "--mute-audio"])
     
     cmd.append(url)
     
     try:
         startupinfo = subprocess.STARTUPINFO()
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startupinfo.wShowWindow = 6  # SW_MINIMIZE / SW_HIDE
+        startupinfo.wShowWindow = 6  # SW_MINIMIZE
         subprocess.Popen(cmd, startupinfo=startupinfo, close_fds=True)
         logger.info("launched chrome profile '%s' (secondary=%s) in background", profile_dir, is_secondary)
         return True
@@ -72,12 +97,12 @@ def launch_profile_background(profile_dir: str = "Default", url: str = "https://
         return False
 
 
-def launch_all_profiles_background(url: str = "https://www.facebook.com/", skip_main: bool = False) -> list[str]:
-    """Launch all detected Chrome profiles in background.
+def launch_all_profiles_background(url: str = "https://www.facebook.com/", skip_main: bool = False, max_profiles: int = 5) -> list[str]:
+    """Launch detected Chrome profiles in background up to max_profiles.
     
-    Secondary profiles (Profile 1, Profile 2, ...) are launched completely invisible off-screen.
+    Skips any profile that is already running.
     """
-    profiles = get_chrome_profiles()
+    profiles = get_chrome_profiles()[:max_profiles]
     launched = []
     for i, p in enumerate(profiles):
         if skip_main and (p == "Default" or i == 0):
@@ -86,3 +111,4 @@ def launch_all_profiles_background(url: str = "https://www.facebook.com/", skip_
         if launch_profile_background(p, url, is_secondary=is_sub):
             launched.append(p)
     return launched
+

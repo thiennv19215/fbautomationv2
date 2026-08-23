@@ -747,8 +747,9 @@ def get_history(limit: int = 100) -> dict:
 @app.post("/api/history/clear")
 @app.delete("/api/history")
 def clear_history() -> dict:
-    """Clear all stored job history."""
+    """Clear all stored job history from both SQLite and JSON store."""
     history_store.clear_jobs()
+    admin_store.clear_jobs()
     return {"ok": True}
 
 
@@ -874,12 +875,16 @@ async def stage_url(body: StageUrlBody) -> dict:
     route = "local-video" if is_video else "local-image"
     url = f"http://127.0.0.1:{HTTP_PORT}/{route}?name={quote(dest.name)}"
 
+    from ..bot.telegram_service import extract_smart_caption
+    suggested_cap = extract_smart_caption(raw_url)
+
     return {
         "ok": True,
         "filename": dest.name,
         "mediaType": "video" if is_video else "image",
         "url": url,
         "sizeBytes": dest.stat().st_size,
+        "suggestedCaption": suggested_cap,
     }
 
 
@@ -1066,6 +1071,36 @@ def set_telegram_config(body: TelegramConfigBody) -> dict:
 async def test_telegram(body: TelegramTestBody) -> dict:
     """Send a test message to Telegram."""
     return await telegram_bot.test_connection(token=body.token, chat_id=body.chatId)
+
+
+@app.get("/api/telegram/groups")
+def get_telegram_groups() -> dict:
+    """List all registered Telegram groups and their custom settings."""
+    return {"items": telegram_bot.get_groups_config()}
+
+
+@app.post("/api/telegram/groups")
+def save_telegram_group(payload: dict) -> dict:
+    """Save or update specific Telegram group settings."""
+    cid = str(payload.get("chatId") or payload.get("chat_id") or "").strip()
+    if not cid:
+        raise HTTPException(status_code=400, detail="missing_chatId")
+    data = {
+        "title": payload.get("title") or f"Group {cid}",
+        "default_page_id": payload.get("defaultPageId") or payload.get("default_page_id") or None,
+        "default_page_name": payload.get("defaultPageName") or payload.get("default_page_name") or "",
+        "auto_post": bool(payload.get("autoPost") if payload.get("autoPost") is not None else payload.get("auto_post", True)),
+        "default_hashtags": payload.get("defaultHashtags") or payload.get("default_hashtags") or "",
+    }
+    saved = telegram_bot.save_group_config(cid, data)
+    return {"ok": True, "groups": saved}
+
+
+@app.delete("/api/telegram/groups/{chat_id}")
+def delete_telegram_group(chat_id: str) -> dict:
+    """Remove a Telegram group custom configuration."""
+    saved = telegram_bot.delete_group_config(chat_id)
+    return {"ok": True, "groups": saved}
 
 
 @app.post("/switch-profile")
