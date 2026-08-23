@@ -27,18 +27,20 @@ _pending_media: dict[str, dict] = {}  # temp store for media awaiting inline but
 
 
 def _read_env_file() -> dict[str, str]:
-    if not _ENV_PATH.exists():
-        return {}
-    res = {}
-    try:
-        for line in _ENV_PATH.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                res[k.strip()] = v.strip().strip('"').strip("'")
-    except Exception as exc:
-        logger.warning("failed to read .env: %s", exc)
-    return res
+    candidates = [Path(".env"), _ENV_PATH]
+    for env_p in candidates:
+        if env_p.exists():
+            try:
+                res = {}
+                for line in env_p.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        res[k.strip()] = v.strip().strip('"').strip("'")
+                return res
+            except Exception as exc:
+                logger.warning("failed to read %s: %s", env_p, exc)
+    return {}
 
 
 def get_config() -> dict:

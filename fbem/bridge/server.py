@@ -128,7 +128,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_STATIC_DIR = Path(__file__).parent / "static"
+import sys
+
+def _get_static_dir() -> Path:
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        bundled = Path(sys._MEIPASS) / "fbem" / "bridge" / "static"
+        if bundled.exists():
+            return bundled
+    return Path(__file__).parent / "static"
+
+_STATIC_DIR = _get_static_dir()
 _STATIC_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/ui", StaticFiles(directory=_STATIC_DIR, html=True), name="dashboard")
 
