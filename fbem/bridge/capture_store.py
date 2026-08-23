@@ -30,7 +30,7 @@ from .config import captures_dir
 logger = logging.getLogger(__name__)
 
 _CAPTURES_DIR = captures_dir()
-_TEMPLATE_PATH = _CAPTURES_DIR / "template.json"  # legacy/default scope
+_TEMPLATE_PATH = _CAPTURES_DIR / "template.json"
 
 # Live capture activity — proof the extension is attached to a logged-in
 # facebook.com tab and actively observing it (updates on every captured request,
@@ -39,20 +39,6 @@ _TEMPLATE_PATH = _CAPTURES_DIR / "template.json"  # legacy/default scope
 _last_capture_at: Optional[float] = None
 _capture_count: int = 0
 _last_capture_url: Optional[str] = None
-_scope_stats: dict[str, dict[str, Any]] = {}
-
-
-def _safe_scope(scope: Optional[str]) -> str:
-    value = str(scope or "legacy")
-    return re.sub(r"[^a-zA-Z0-9_.-]", "_", value)[:120] or "legacy"
-
-
-def _scope_dir(scope: Optional[str]) -> Any:
-    return _CAPTURES_DIR if not scope or scope == "legacy" else _CAPTURES_DIR / _safe_scope(scope)
-
-
-def _template_path(scope: Optional[str]) -> Any:
-    return _scope_dir(scope) / "template.json"
 
 # Which graphql op is the actual Reel publish. During reel creation FB fires
 # dozens of graphql ops (typeaheads, queries); only ONE publishes the post, so
@@ -67,8 +53,8 @@ _PUBLISH_OP_RE = re.compile(
 )
 
 
-def _ensure_dir(scope: Optional[str] = None) -> None:
-    _scope_dir(scope).mkdir(parents=True, exist_ok=True)
+def _ensure_dir() -> None:
+    _CAPTURES_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _publish_attachment_kind(payload: dict) -> Optional[str]:
@@ -106,13 +92,26 @@ def _publish_attachment_kind(payload: dict) -> Optional[str]:
         return None
 
 
-def save_capture(payload: dict, scope: Optional[str] = None) -> None:
+def _get_target_dir(extension_id: str | None = None) -> Path:
+    if extension_id and extension_id.strip():
+        # sanitize extension_id
+        safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", extension_id.strip())
+        if safe_id:
+            d = _CAPTURES_DIR / safe_id
+            d.mkdir(parents=True, exist_ok=True)
+            return d
+    _ensure_dir()
+    return _CAPTURES_DIR
+
+
+def save_capture(payload: dict, extension_id: str | None = None) -> None:
     """Append a recorded native request to the captures dir and fold its kind
     into template.json. ``payload['kind']`` selects the template slot
     (defaults to "unknown" so nothing is silently dropped)."""
-    _ensure_dir(scope)
-    target_dir = _scope_dir(scope)
-    target_template = _template_path(scope)
+    ext_id = extension_id or payload.get("extensionId")
+    target_dir = _get_target_dir(ext_id)
+    template_path = target_dir / "template.json"
+
     kind = payload.get("kind") or "unknown"
     ts = int(time.time())
 
@@ -122,13 +121,6 @@ def save_capture(payload: dict, scope: Optional[str] = None) -> None:
     _capture_count += 1
     if payload.get("url"):
         _last_capture_url = str(payload["url"])[:200]
-    scope_key = _safe_scope(scope)
-    scoped = _scope_stats.setdefault(scope_key, {"captures": 0})
-    scoped.update({
-        "captures": int(scoped.get("captures", 0)) + 1,
-        "last_capture_at": _last_capture_at,
-        "last_capture_url": _last_capture_url,
-    })
 
     # Comprehensive trace: one request+response per line, for OFFLINE analysis.
     # Kept out of the per-file/template machinery so a full session is one stream.
@@ -141,54 +133,36 @@ def save_capture(payload: dict, scope: Optional[str] = None) -> None:
         return
 
     capture_path = target_dir / f"{ts}-{kind}.json"
-    # Guard against collisions when two captures of the same kind land in the
-    # same second.
     suffix = 0
     while capture_path.exists():
         suffix += 1
         capture_path = target_dir / f"{ts}-{kind}-{suffix}.json"
     capture_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    logger.info("saved capture %s", capture_path.name)
+    logger.info("saved capture %s in %s", capture_path.name, target_dir.name)
 
-    template = load_template(scope) or {}
+    template = load_template(ext_id) or {}
     template["updatedAt"] = ts
 
     if kind == "graphql":
-        # Keep one capture per friendly name for inspection, and only promote the
-        # real publish mutation into the slot the replay uses.
         friendly = payload.get("friendlyName") or "(unknown)"
         ops = template.setdefault("graphql_ops", {})
         ops[friendly] = payload
         if _PUBLISH_OP_RE.search(friendly):
-            # Reel (video), photo/album, AND link shares ALL fire
-            # ComposerStoryCreateMutation. Route by attachment type into separate
-            # slots, and — critically — only let a real `video` attachment write
-            # the reel slot. A stray link share / empty CSCM must NOT clobber it
-            # (that produced replay error story_create=null [1373034]).
             att_kind = _publish_attachment_kind(payload)
             if att_kind == "photo":
                 template["graphql_photo"] = payload
                 logger.info("folded PHOTO publish op=%s into graphql_photo", friendly)
             elif att_kind == "other":
-                # Link share / empty / text-only CSCM — recognized as NOT a reel.
-                # Must not clobber the reel or photo slot (this exact case wrote a
-                # link share into the reel slot and broke replay: [1373034]).
                 logger.info(
                     "ignored non-media CSCM publish op=%s — leaving reel/photo slots intact",
                     friendly,
                 )
             else:
-                # "video", or None (body unparseable → FB may have rotated the
-                # shape). Fall back to the reel slot so a manual re-capture still
-                # self-heals reel replay, as it always did.
                 template["graphql"] = payload
                 logger.info("folded REEL publish op=%s into graphql (att=%s)", friendly, att_kind)
         else:
             logger.info("recorded graphql op=%s (not the publish mutation)", friendly)
     elif kind == "photo_upload":
-        # The native composer photo-upload request (upload.facebook.com/...). We
-        # template its url + form fields; the replay swaps the image bytes + fresh
-        # volatile tokens. Strip the binary `farr` payload — bytes come from us.
         rb = payload.get("reqBody") or payload.get("body") or {}
         fields = {}
         if isinstance(rb, dict) and rb.get("type") == "formdata":
@@ -201,24 +175,14 @@ def save_capture(payload: dict, scope: Optional[str] = None) -> None:
         }
         logger.info("folded photo_upload template into template.json")
     elif kind == "upload_flow":
-        # The full vupload request+response trace (start/transfer/cvc). Keep a
-        # rolling window for analysis; the replay is derived from these.
         flows = template.setdefault("upload_flow", [])
         flows.append(payload)
         del flows[:-12]  # keep the last 12
         logger.info("recorded upload_flow %s -> %s", payload.get("method"), (payload.get("url") or "")[:60])
     elif kind == "rupload":
-        # The reel rupload slot must hold the VIDEO byte-transfer only. The native
-        # photo composer POSTs to upload.facebook.com/.../react_composer/attachments/
-        # photo/upload — which the background webRequest listener also tags as
-        # `rupload` (its URL contains "upload"). That photo transfer has its own
-        # `photo_upload` slot, so it must NOT clobber the reel slot here (same class
-        # of bug as the non-video CSCM clobber, [a5a5c83]).
         url = payload.get("url") or ""
         if re.search(r"/react_composer/attachments/photo/", url, re.IGNORECASE):
             logger.info("ignored photo-composer rupload — leaving reel rupload slot intact")
-        # Only a real byte-transfer POST/PUT (has the id/offset/entity headers) is
-        # a usable template — never the OPTIONS preflight.
         elif (payload.get("method") or "").upper() in ("POST", "PUT"):
             template["rupload"] = payload
             logger.info("folded real rupload POST into template.json")
@@ -228,56 +192,52 @@ def save_capture(payload: dict, scope: Optional[str] = None) -> None:
         template[kind] = payload
         logger.info("folded kind=%s into template.json", kind)
 
-    # Atomic write (temp + os.replace) so a crash or interleaved write mid-flight
-    # can't leave a truncated template.json that load_template would silently treat
-    # as "no template captured".
-    tmp = target_template.with_suffix(".json.tmp")
+    # Atomic write
+    tmp = template_path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(template, indent=2), encoding="utf-8")
-    os.replace(tmp, target_template)
+    os.replace(tmp, template_path)
 
 
 def template_complete(t: Optional[dict]) -> bool:
-    """Usable for REEL replay once we have the (video) publish mutation. The
-    video upload steps (vupload start/transfer/receive) are reproduced
-    programmatically from the decoded protocol (see PROTOCOL.md); only the publish
-    mutation is templated. A regional rupload host helps but has a fallback."""
+    """Usable for REEL replay once we have the (video) publish mutation."""
     return bool(t) and bool(t.get("graphql"))
 
 
 def photo_template_complete(t: Optional[dict]) -> bool:
-    """Usable for PHOTO/ALBUM replay once we have both the photo-upload request
-    template and the photo publish mutation. The upload request can fall back to a
-    constructed default, so the publish mutation is the hard requirement."""
+    """Usable for PHOTO/ALBUM replay once we have both photo-upload and photo publish mutation."""
     return bool(t) and bool(t.get("graphql_photo"))
 
 
-def capture_stats(scope: Optional[str] = None) -> dict:
-    """Live capture activity — proof the extension is on a logged-in FB tab and
-    actively observing it. ``tab_active`` is True when a capture arrived recently
-    (default 90s window, FBEM_TAB_ACTIVE_WINDOW_S to tune)."""
+def capture_stats(extension_id: str | None = None) -> dict:
+    """Live capture activity."""
     window = float(os.getenv("FBEM_TAB_ACTIVE_WINDOW_S", "90"))
-    scoped = _scope_stats.get(_safe_scope(scope)) if scope else None
-    last_at = scoped.get("last_capture_at") if scoped else _last_capture_at
-    count = scoped.get("captures", 0) if scoped else _capture_count
-    last_url = scoped.get("last_capture_url") if scoped else _last_capture_url
-    seconds_since = int(time.time() - last_at) if last_at is not None else None
+    seconds_since = (
+        int(time.time() - _last_capture_at) if _last_capture_at is not None else None
+    )
     return {
-        "captures": count,
-        "last_capture_at": int(last_at) if last_at is not None else None,
+        "captures": _capture_count,
+        "last_capture_at": int(_last_capture_at) if _last_capture_at is not None else None,
         "seconds_since_capture": seconds_since,
-        "last_capture_url": last_url,
+        "last_capture_url": _last_capture_url,
         "tab_active": seconds_since is not None and seconds_since <= window,
     }
 
 
-def load_template(scope: Optional[str] = None) -> Optional[dict]:
-    """Return the current template.json contents, or None if not captured yet."""
-    path = _template_path(scope)
-    if not path.exists():
-        return None
-    try:
-        data: Any = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
-        logger.warning("failed to read template.json: %s", exc)
-        return None
-    return data if isinstance(data, dict) else None
+def load_template(extension_id: str | None = None) -> Optional[dict]:
+    """Return the current template.json contents, checking scoped dir then falling back to root."""
+    paths_to_check: list[Path] = []
+    if extension_id and extension_id.strip():
+        safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", extension_id.strip())
+        if safe_id:
+            paths_to_check.append(_CAPTURES_DIR / safe_id / "template.json")
+    paths_to_check.append(_TEMPLATE_PATH)
+
+    for p in paths_to_check:
+        if p.exists():
+            try:
+                data: Any = json.loads(p.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return data
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.warning("failed to read %s: %s", p, exc)
+    return None

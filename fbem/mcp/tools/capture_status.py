@@ -16,10 +16,10 @@ from ..bridge_api import BridgeError
         "payload and replay starts failing."
     ),
 )
-async def capture_status() -> dict:
+async def capture_status(extension_id: str | None = None) -> dict:
     """Inspect captured templates and report readiness + capture guidance."""
     try:
-        h = await bridge.health()
+        h = await bridge.health(extension_id=extension_id)
     except BridgeError as exc:
         return {
             "bridge_up": False,
@@ -28,7 +28,7 @@ async def capture_status() -> dict:
         }
 
     try:
-        tpl = await bridge.template()
+        tpl = await bridge.template(extension_id=extension_id)
     except BridgeError:
         tpl = {}
     ops = tpl.get("graphql_ops") or {} if isinstance(tpl, dict) else {}
@@ -49,6 +49,8 @@ async def capture_status() -> dict:
     return {
         "bridge_up": True,
         "extension_connected": connected,
+        "extension_count": h.get("extension_count", 1 if connected else 0),
+        "extensions": h.get("extensions", []),
         "tab_active": h.get("tab_active"),
         "ttl_remaining_s": h.get("ttl_remaining_s"),
         "stale": h.get("stale"),

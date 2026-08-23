@@ -12,6 +12,6 @@ from .. import bridge_api as bridge
         "(read-only, no switch). Useful to confirm identity before posting."
     ),
 )
-async def get_identity() -> dict:
+async def get_identity(extension_id: str | None = None) -> dict:
     """Return ``{ id, name }`` of the current acting identity."""
-    return await bridge.current_identity()
+    return await bridge.current_identity(extension_id=extension_id)

@@ -54,10 +54,36 @@ window.addEventListener('message', (event) => {
       postId: data.postId,
       photoIds: data.photoIds ?? null,
       permalinkUrl: data.permalinkUrl ?? null,
-      // switch fields
+      // switch/identity fields
       identityId: data.identityId,
       identityName: data.identityName,
     };
+
+    if (data.type === 'get_identity_result' && payload.identityId && !payload.identityName) {
+      try {
+        const ogTitle = document.querySelector('meta[property="og:title"]')?.content;
+        if (ogTitle && !ogTitle.toLowerCase().includes('facebook')) {
+          payload.identityName = ogTitle.trim();
+        } else if (document.title) {
+          const clean = document.title
+            .replace(/^\(\d+\)\s*/, '')
+            .replace(/\s*\|\s*Facebook.*$/i, '')
+            .replace(/\s*-\s*Facebook.*$/i, '')
+            .replace(/\s*-\s*Trang chủ.*$/i, '')
+            .trim();
+          if (clean && clean.toLowerCase() !== 'facebook') {
+            payload.identityName = clean;
+          }
+        }
+        if (!payload.identityName) {
+          const h1 = document.querySelector('h1, div[role="main"] h1');
+          if (h1 && h1.textContent?.trim()) {
+            payload.identityName = h1.textContent.trim();
+          }
+        }
+      } catch (_) {}
+    }
+
     const cb = data.id != null ? pendingReel.get(data.id) : undefined;
     if (cb) {
       pendingReel.delete(data.id);

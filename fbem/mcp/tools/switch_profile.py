@@ -12,11 +12,12 @@ from .. import bridge_api as bridge
         "Pages). Requires a captured CometProfileSwitchMutation template."
     )
 )
-async def switch_profile(target_id: str) -> dict:
+async def switch_profile(target_id: str, extension_id: str | None = None) -> dict:
     """Switch the acting identity, then reload the tab.
 
     Args:
         target_id: The page/profile id to switch to.
+        extension_id: Optional Chrome extension / profile id to target if multiple are connected.
     Returns: ``{ ok, identityId, identityName }``.
     """
-    return await bridge.switch_profile(target_id)
+    return await bridge.switch_profile(target_id, extension_id=extension_id)

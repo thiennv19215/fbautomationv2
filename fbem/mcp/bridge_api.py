@@ -85,12 +85,14 @@ def _stage_media(local_path: str, *, kind: str) -> str:
 
 
 # ── high-level calls (mirror the bridge HTTP API) ────────────────────────────
-async def health() -> dict:
-    return await _get("/api/health")
+async def health(extension_id: str | None = None) -> dict:
+    query = f"?extension_id={quote(extension_id)}" if extension_id else ""
+    return await _get(f"/api/health{query}")
 
 
-async def template() -> dict:
-    return await _get("/api/template")
+async def template(extension_id: str | None = None) -> dict:
+    query = f"?extension_id={quote(extension_id)}" if extension_id else ""
+    return await _get(f"/api/template{query}")
 
 
 async def post_reel(
@@ -98,6 +100,7 @@ async def post_reel(
     caption: str,
     page_id: str | None = None,
     scheduled_publish_time: int | None = None,
+    extension_id: str | None = None,
 ) -> dict:
     staged = await asyncio.to_thread(_stage_media, video_path, kind="local-video")
     body: dict = {"videoUrl": staged, "caption": caption}
@@ -105,6 +108,8 @@ async def post_reel(
         body["pageId"] = page_id
     if scheduled_publish_time is not None:
         body["scheduledPublishTime"] = scheduled_publish_time
+    if extension_id:
+        body["extensionId"] = extension_id
     return await _post("/post-reel", body, timeout=300.0)
 
 
@@ -113,6 +118,7 @@ async def post_photos(
     caption: str,
     page_id: str | None = None,
     scheduled_publish_time: int | None = None,
+    extension_id: str | None = None,
 ) -> dict:
     urls = [await asyncio.to_thread(_stage_media, p, kind="local-image") for p in image_paths]
     body: dict = {"imageUrls": urls, "caption": caption}
@@ -120,12 +126,18 @@ async def post_photos(
         body["pageId"] = page_id
     if scheduled_publish_time is not None:
         body["scheduledPublishTime"] = scheduled_publish_time
+    if extension_id:
+        body["extensionId"] = extension_id
     return await _post("/post-photos", body, timeout=310.0)
 
 
-async def switch_profile(target_id: str) -> dict:
-    return await _post("/switch-profile", {"targetId": target_id}, timeout=60.0)
+async def switch_profile(target_id: str, extension_id: str | None = None) -> dict:
+    body: dict = {"targetId": target_id}
+    if extension_id:
+        body["extensionId"] = extension_id
+    return await _post("/switch-profile", body, timeout=60.0)
 
 
-async def current_identity() -> dict:
-    return await _get("/api/current-identity", timeout=20.0)
+async def current_identity(extension_id: str | None = None) -> dict:
+    query = f"?extension_id={quote(extension_id)}" if extension_id else ""
+    return await _get(f"/api/current-identity{query}", timeout=20.0)

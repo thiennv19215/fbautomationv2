@@ -18,6 +18,7 @@ async def post_photos(
     caption: str,
     page_id: str | None = None,
     scheduled_publish_time: int | None = None,
+    extension_id: str | None = None,
 ) -> dict:
     """Upload and publish a photo or album.
 
@@ -26,6 +27,13 @@ async def post_photos(
         caption: Full caption text (including hashtags).
         page_id: Optional Facebook page id to post as.
         scheduled_publish_time: Optional epoch SECONDS to schedule; omit to publish now.
+        extension_id: Optional Chrome extension / profile id to target if multiple are connected.
     Returns: ``{ ok, postId, photoIds, permalinkUrl }``.
     """
-    return await bridge.post_photos(image_paths, caption, page_id, scheduled_publish_time)
+    return await bridge.post_photos(
+        image_paths,
+        caption,
+        page_id=page_id,
+        scheduled_publish_time=scheduled_publish_time,
+        extension_id=extension_id,
+    )

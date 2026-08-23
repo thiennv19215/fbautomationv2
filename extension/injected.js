@@ -83,7 +83,7 @@
   // ── crawler matchers ──────────────────────────────────────
   const RUPLOAD_RE = /rupload\.facebook\.com/i;
   const GRAPHQL_RE = /\/api\/graphql\//i;
-  const REEL_RE    = /reel/i;
+  const REEL_RE = /reel/i;
   // Native composer photo upload — bytes go to upload.facebook.com and the
   // response mints the photoID the publish mutation references.
   const PHOTO_UPLOAD_RE = /\/ajax\/react_composer\/attachments\/photo\/upload/i;
@@ -148,7 +148,7 @@
           extractFriendlyName(serialized);
         // Reel creation fires dozens of graphql ops (typeaheads, queries); only
         // mutations can publish, so skip everything else to keep the template clean.
-        if (friendly && /mutation/i.test(friendly)) {
+        if (friendly && (/mutation/i.test(friendly) || /switcher|pagelist|accountswitcher/i.test(friendly))) {
           emitCapture({
             kind: 'graphql',
             url: u,
@@ -194,9 +194,9 @@
               respStatus: resp.status,
               respBody: (text || '').slice(0, 60000),
             });
-          }).catch(() => {});
+          }).catch(() => { });
         } catch (_) { /* ignore */ }
-      }).catch(() => {});
+      }).catch(() => { });
     } catch (_) { /* never break the page */ }
   }
 
@@ -1100,7 +1100,13 @@
     }
 
     if (data.type === 'get_identity') {
-      // Read the CURRENT acting identity (page or personal profile) + Page Name
+      // Read the CURRENT acting identity (the page/profile this tab posts AS).
+      // When "using Facebook as a Page", the session cookie `i_user` holds the
+      // PAGE id (the actor), while `c_user` stays the personal account and
+      // CurrentUserInitialData.ACCOUNT_ID also stays personal. So the real per-page
+      // id is `i_user` when present; otherwise we're acting as the personal account.
+      // NAME is only reliable for the personal account — when acting as a Page the
+      // bootloader NAME stays personal, so we return name=null in that case.
       const id = data.id;
       const readCookie = (k) => {
         const m = new RegExp('(?:^|;\\s*)' + k + '=([^;]+)').exec(document.cookie || '');
@@ -1113,57 +1119,51 @@
         let identityId = iUser || null;
         let identityName = null;
 
-        // 1. Check CurrentUserInitialData
-        let cuId = null;
-        try {
-          const cu = window.require?.('CurrentUserInitialData');
-          if (cu) {
-            cuId = cu.ACCOUNT_ID || cu.USER_ID || null;
-            if (!identityId) identityId = cuId;
-            if (identityId && cuId && String(identityId) === String(cuId)) {
-              identityName = cu.NAME || cu.SHORT_NAME || null;
-            }
-          }
-        } catch (_) {}
-
-        // 2. Extract Page Name from DOM / meta tags / Document Title if acting as Page
-        if (!identityName || identityId !== cuId) {
+        if (iUser) {
+          // ACTING AS A FANPAGE: Extract real Page name from DOM & Meta tags
           try {
+            // 1. Check meta og:title
             const ogTitle = document.querySelector('meta[property="og:title"]')?.content;
             if (ogTitle && !ogTitle.toLowerCase().includes('facebook')) {
               identityName = ogTitle.trim();
             }
-            if (!identityName) {
-              const h1 = document.querySelector('[role="main"] h1, h1')?.innerText;
-              if (h1 && h1.trim()) identityName = h1.trim();
-            }
+
+            // 2. Check document.title
             if (!identityName && document.title) {
-              const cleaned = document.title
-                .replace(/\(\d+\)\s*/g, '')
-                .replace(/\s*\|\s*Facebook.*/i, '')
-                .replace(/\s*-\s*Facebook.*/i, '')
+              const cleanTitle = document.title
+                .replace(/^\(\d+\)\s*/, '')
+                .replace(/\s*\|\s*Facebook.*$/i, '')
+                .replace(/\s*-\s*Facebook.*$/i, '')
+                .replace(/\s*-\s*Trang chủ.*$/i, '')
                 .trim();
-              if (cleaned && cleaned.toLowerCase() !== 'facebook') {
-                identityName = cleaned;
+              if (cleanTitle && cleanTitle.toLowerCase() !== 'facebook') {
+                identityName = cleanTitle;
               }
             }
-          } catch (_) {}
-        }
 
-        // 3. If currently viewing a Fanpage URL, detect Page ID from meta
-        if (!iUser) {
-          try {
-            const metaAndroid = document.querySelector('meta[property="al:android:url"]')?.content || '';
-            const mPage = /fb:\/\/page\/(\d+)/i.exec(metaAndroid);
-            if (mPage && mPage[1]) {
-              identityId = mPage[1];
+            // 3. Check Main H1 / Heading
+            if (!identityName) {
+              const h1 = document.querySelector('div[role="main"] h1, h1, div[data-pagelet="ProfileHeader"] h1');
+              if (h1 && h1.textContent) {
+                identityName = h1.textContent.trim();
+              }
             }
-          } catch (_) {}
+          } catch (_) { /* ignore */ }
         }
 
-        identityId = identityId || cUser || readTokens().__user || null;
+        if (!identityId) {
+          try {
+            const cu = window.require?.('CurrentUserInitialData');
+            if (cu && cu.NAME) {
+              identityName = cu.NAME;
+              identityId = cu.ACCOUNT_ID || cu.USER_ID;
+            }
+          } catch (_) { }
+          identityId = identityId || cUser || readTokens().__user || null;
+        }
+
         result = identityId
-          ? { ok: true, identityId: String(identityId), identityName: identityName || `ID ${identityId}` }
+          ? { ok: true, identityId: String(identityId), identityName: identityName || (iUser ? `Fanpage ${identityId}` : null) }
           : { ok: false, error: 'no_identity' };
       } catch (e) {
         result = { ok: false, error: String(e?.message || e) };
@@ -1171,7 +1171,6 @@
       emit('get_identity_result', { id, ...result });
       return;
     }
-
   });
 
   console.log(TAG, 'crawler + replay armed');

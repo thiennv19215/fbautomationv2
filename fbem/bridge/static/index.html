@@ -1,12 +1,1323 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="vi">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#0b1220" />
-    <title>FBEM Control Center</title>
-    <script type="module" crossorigin src="/ui/assets/index-K4SS_Nb_.js"></script>
-    <link rel="stylesheet" crossorigin href="/ui/assets/index-DPmusHoe.css">
-  </head>
-  <body><div id="root"></div></body>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FBEM Studio — Quản trị Facebook Automation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --card-bg: rgba(23, 32, 54, 0.7);
+      --card-border: rgba(255, 255, 255, 0.08);
+      --card-hover: rgba(30, 41, 69, 0.85);
+      --primary: #6366f1;
+      --primary-hover: #4f46e5;
+      --primary-glow: rgba(99, 102, 241, 0.35);
+      --accent: #38bdf8;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #f43f5e;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --text-sub: #64748b;
+      --radius: 14px;
+      --radius-sm: 8px;
+      --font-main: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-title: 'Outfit', var(--font-main);
+      --shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.5);
+      --glass: backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg);
+      background-image: 
+        radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.12) 0px, transparent 50%),
+        radial-gradient(at 100% 100%, rgba(56, 189, 248, 0.08) 0px, transparent 50%);
+      color: var(--text);
+      font-family: var(--font-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      line-height: 1.5;
+    }
+
+    header {
+      background: rgba(11, 15, 25, 0.8);
+      border-bottom: 1px solid var(--card-border);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      backdrop-filter: blur(12px);
+      padding: 0.75rem 2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-family: var(--font-title);
+      font-weight: 800;
+      font-size: 1.25rem;
+      background: linear-gradient(135deg, #fff 30%, var(--accent));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .brand-badge {
+      font-size: 0.65rem;
+      font-family: var(--font-main);
+      background: rgba(99, 102, 241, 0.2);
+      border: 1px solid rgba(99, 102, 241, 0.4);
+      color: #a5b4fc;
+      padding: 2px 8px;
+      border-radius: 20px;
+      -webkit-text-fill-color: initial;
+    }
+
+    .top-stats { display: flex; align-items: center; gap: 16px; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.8rem;
+      padding: 4px 12px;
+      border-radius: 30px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--card-border);
+      color: var(--text-muted);
+    }
+    .pill.online {
+      background: rgba(16, 185, 129, 0.12);
+      border-color: rgba(16, 185, 129, 0.3);
+      color: #34d399;
+    }
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #34d399;
+      box-shadow: 0 0 10px #34d399;
+    }
+    .dot.offline { background: var(--danger); box-shadow: 0 0 10px var(--danger); }
+
+    .app-container {
+      display: flex;
+      flex: 1;
+      max-width: 1440px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 1.5rem 2rem;
+      gap: 2rem;
+    }
+
+    nav.sidebar {
+      width: 240px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 16px;
+      border-radius: var(--radius-sm);
+      color: var(--text-muted);
+      cursor: pointer;
+      font-weight: 500;
+      font-size: 0.95rem;
+      transition: all 0.2s ease;
+      background: transparent;
+      border: none;
+      text-align: left;
+      width: 100%;
+    }
+    .nav-item:hover { color: #fff; background: rgba(255, 255, 255, 0.05); }
+    .nav-item.active {
+      color: #fff;
+      background: linear-gradient(135deg, rgba(99, 102, 241, 0.25), rgba(56, 189, 248, 0.15));
+      border: 1px solid rgba(99, 102, 241, 0.4);
+      box-shadow: 0 4px 15px rgba(99, 102, 241, 0.15);
+      font-weight: 600;
+    }
+    .nav-icon { font-size: 1.15rem; width: 22px; text-align: center; }
+
+    main.content { flex: 1; min-width: 0; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; animation: fadeIn 0.25s ease-out; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      padding: 1.5rem;
+      backdrop-filter: blur(16px);
+      box-shadow: var(--shadow);
+      margin-bottom: 1.5rem;
+    }
+    .card-title {
+      font-family: var(--font-title);
+      font-size: 1.15rem;
+      font-weight: 700;
+      margin-bottom: 0.5rem;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .card-subtitle { color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1.25rem; }
+
+    .grid-stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1.25rem;
+      margin-bottom: 1.5rem;
+    }
+    .stat-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      padding: 1.25rem;
+      position: relative;
+      overflow: hidden;
+    }
+    .stat-card::after {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0; height: 3px;
+      background: linear-gradient(90deg, var(--primary), var(--accent));
+    }
+    .stat-label { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); font-weight: 600; }
+    .stat-val { font-size: 1.8rem; font-weight: 800; font-family: var(--font-title); margin: 6px 0; color: #fff; }
+    .stat-desc { font-size: 0.75rem; color: var(--text-sub); }
+
+    .form-group { margin-bottom: 1.25rem; }
+    .form-label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.4rem; color: #e2e8f0; }
+    .form-control, .form-select {
+      width: 100%;
+      padding: 10px 14px;
+      background: rgba(15, 23, 42, 0.7);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius-sm);
+      color: #fff;
+      font-family: var(--font-main);
+      font-size: 0.9rem;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .form-control:focus, .form-select:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
+    }
+    textarea.form-control { resize: vertical; min-height: 100px; }
+
+    .type-switcher {
+      display: inline-flex;
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid var(--card-border);
+      padding: 4px;
+      border-radius: var(--radius-sm);
+      margin-bottom: 1.25rem;
+      gap: 4px;
+    }
+    .type-btn {
+      padding: 8px 18px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      background: transparent;
+      color: var(--text-muted);
+      border: none;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .type-btn.active {
+      background: var(--primary);
+      color: #fff;
+      box-shadow: 0 2px 8px var(--primary-glow);
+    }
+
+    .sub-tabs {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .sub-tab-btn {
+      font-size: 0.8rem;
+      padding: 5px 12px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--card-border);
+      color: var(--text-muted);
+      cursor: pointer;
+    }
+    .sub-tab-btn.active {
+      background: rgba(99, 102, 241, 0.2);
+      border-color: var(--primary);
+      color: #c7d2fe;
+      font-weight: 600;
+    }
+
+    .dropzone {
+      border: 2px dashed rgba(255, 255, 255, 0.15);
+      border-radius: var(--radius);
+      padding: 1.75rem 1.5rem;
+      text-align: center;
+      background: rgba(15, 23, 42, 0.4);
+      cursor: pointer;
+      transition: all 0.2s;
+      position: relative;
+    }
+    .dropzone:hover { border-color: var(--primary); background: rgba(99, 102, 241, 0.05); }
+    .dropzone-icon { font-size: 2rem; margin-bottom: 6px; color: var(--primary); }
+    .dropzone input { position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+
+    .media-preview-container {
+      margin-top: 1rem;
+      display: none;
+      background: rgba(11, 15, 25, 0.6);
+      border-radius: var(--radius-sm);
+      padding: 10px;
+      border: 1px solid var(--card-border);
+    }
+    .media-preview-container.show { display: flex; align-items: center; gap: 14px; }
+    .preview-thumb {
+      width: 80px;
+      height: 80px;
+      border-radius: 6px;
+      object-fit: cover;
+      background: #000;
+    }
+    .preview-info { flex: 1; min-width: 0; font-size: 0.85rem; }
+    .preview-info strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    .chip-group { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    .chip {
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid var(--card-border);
+      color: var(--text-muted);
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-size: 0.75rem;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .chip:hover {
+      background: rgba(99, 102, 241, 0.2);
+      color: #c7d2fe;
+      border-color: var(--primary);
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 10px 22px;
+      border-radius: var(--radius-sm);
+      font-family: var(--font-main);
+      font-weight: 600;
+      font-size: 0.9rem;
+      cursor: pointer;
+      border: none;
+      transition: all 0.2s;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, var(--primary), #4338ca);
+      color: #fff;
+      box-shadow: 0 4px 15px var(--primary-glow);
+    }
+    .btn-primary:hover {
+      background: linear-gradient(135deg, var(--primary-hover), var(--primary));
+      transform: translateY(-1px);
+    }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.08);
+      color: #e2e8f0;
+      border: 1px solid var(--card-border);
+    }
+    .btn-secondary:hover { background: rgba(255, 255, 255, 0.12); }
+    .btn-danger { background: rgba(244, 63, 94, 0.15); border: 1px solid rgba(244, 63, 94, 0.3); color: #fda4af; }
+
+    .result-box {
+      margin-top: 1.5rem;
+      padding: 1.25rem;
+      border-radius: var(--radius-sm);
+      display: none;
+    }
+    .result-box.success {
+      display: block;
+      background: rgba(16, 185, 129, 0.1);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      color: #6ee7b7;
+    }
+    .result-box.error {
+      display: block;
+      background: rgba(244, 63, 94, 0.1);
+      border: 1px solid rgba(244, 63, 94, 0.3);
+      color: #fda4af;
+    }
+
+    .table-responsive { width: 100%; overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.85rem; }
+    th { padding: 10px 14px; background: rgba(15, 23, 42, 0.6); color: var(--text-muted); font-weight: 600; border-bottom: 1px solid var(--card-border); }
+    td { padding: 12px 14px; border-bottom: 1px solid rgba(255, 255, 255, 0.04); }
+    tr:hover td { background: rgba(255, 255, 255, 0.02); }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 4px;
+    }
+    .badge-success { background: rgba(16, 185, 129, 0.15); color: #34d399; }
+    .badge-failed { background: rgba(244, 63, 94, 0.15); color: #fb7185; }
+    .badge-running { background: rgba(99, 102, 241, 0.15); color: #a5b4fc; }
+
+    .ext-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 1.25rem;
+    }
+    .ext-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      padding: 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .ext-head { display: flex; align-items: center; gap: 12px; }
+    .ext-avatar {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--primary), var(--accent));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      color: #fff;
+    }
+    .ext-info h4 { font-size: 0.95rem; margin-bottom: 2px; }
+    .ext-info span { font-size: 0.75rem; color: var(--text-muted); font-family: monospace; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="brand">
+      <span>⚡ FBEM STUDIO</span>
+      <span class="brand-badge">Native Engine</span>
+    </div>
+    <div class="top-stats">
+      <div id="connectionPill" class="pill">
+        <span id="connectionDot" class="dot offline"></span>
+        <span id="connectionText">Đang kiểm tra...</span>
+      </div>
+      <div id="extCountPill" class="pill">
+        <span>0 Profiles Online</span>
+      </div>
+      <button class="btn btn-secondary" style="padding: 5px 12px; font-size: 0.78rem;" onclick="launchChromeProfiles();" title="Kích hoạt tất cả Chrome Profiles chạy ngầm">
+        🚀 Bật Chrome ngầm
+      </button>
+      <button class="btn btn-secondary" style="padding: 5px 12px; font-size: 0.78rem;" onclick="pollState(); alert('🔄 Đã làm mới trạng thái kết nối!');" title="Quét lại kết nối các Chrome Extension">
+        🔄 Quét kết nối
+      </button>
+      <button class="btn btn-primary" style="padding: 5px 14px; font-size: 0.78rem;" onclick="window.open('https://www.facebook.com', '_blank');" title="Mở trang Facebook trên trình duyệt">
+        🌐 Mở Facebook
+      </button>
+    </div>
+  </header>
+
+  <div class="app-container">
+    <nav class="sidebar">
+      <button class="nav-item active" onclick="switchTab('overview')">
+        <span class="nav-icon">📊</span>
+        <span>Tổng quan</span>
+      </button>
+      <button class="nav-item" onclick="switchTab('composer')">
+        <span class="nav-icon">✍️</span>
+        <span>Đăng bài & Lịch</span>
+      </button>
+      <button class="nav-item" onclick="switchTab('pages')">
+        <span class="nav-icon">📑</span>
+        <span>Quản lý Fanpage</span>
+      </button>
+      <button class="nav-item" onclick="switchTab('accounts')">
+        <span class="nav-icon">👥</span>
+        <span>Dàn Tài khoản</span>
+      </button>
+      <button class="nav-item" onclick="switchTab('history')">
+        <span class="nav-icon">📜</span>
+        <span>Lịch sử đăng</span>
+      </button>
+      <button class="nav-item" onclick="switchTab('templates')">
+        <span class="nav-icon">🧩</span>
+        <span>Mẫu Capture</span>
+      </button>
+      <button class="nav-item" onclick="switchTab('telegram')">
+        <span class="nav-icon">🤖</span>
+        <span>Telegram Bot</span>
+      </button>
+    </nav>
+
+    <main class="content">
+
+      <!-- TAB 1: TỔNG QUAN -->
+      <section id="tab-overview" class="tab-content active">
+        <div class="grid-stats">
+          <div class="stat-card">
+            <div class="stat-label">Chrome Profiles</div>
+            <div id="statExtCount" class="stat-val">0</div>
+            <div class="stat-desc">Phiên trình duyệt đang kết nối</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Fanpages Đã lưu</div>
+            <div id="statPageCount" class="stat-val">0</div>
+            <div class="stat-desc">Kênh đã cấu hình đăng</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Mẫu Reels</div>
+            <div id="statReelTpl" class="stat-val">Chưa có</div>
+            <div class="stat-desc">Trạng thái capture video Reel</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Tổng bài đã đăng</div>
+            <div id="statTotalPosts" class="stat-val">0</div>
+            <div class="stat-desc">Ghi nhận qua hệ thống</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3 class="card-title">🚀 Hướng dẫn thao tác nhanh</h3>
+          <p class="card-subtitle">Quy trình tự động hóa xuất bản Facebook không bóp tương tác</p>
+          <div style="font-size: 0.88rem; line-height: 1.8; color: #cbd5e1;">
+            <p>1. <strong>Mở Facebook:</strong> Mở các tab Facebook trong Chrome (đã cài Extension) để hệ thống tự động kết nối.</p>
+            <p>2. <strong>Lưu Fanpage:</strong> Vào mục <strong>Quản lý Fanpage</strong> để lưu sẵn các Fanpage thường đăng kèm Nick quản trị tương ứng.</p>
+            <p>3. <strong>Đăng bài linh hoạt:</strong> Qua mục <strong>Đăng bài & Lịch</strong>, chọn Fanpage, kéo thả video hoặc <em>nhập trực tiếp đường dẫn file trên máy tính</em> và bấm Đăng!</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 2: SOẠN & ĐĂNG BÀI -->
+      <section id="tab-composer" class="tab-content">
+        <div class="card">
+          <h3 class="card-title">✍️ Đăng bài Thủ công & Lên lịch</h3>
+          <p class="card-subtitle">Xuất bản video Reels hoặc Album ảnh trực tiếp lên Facebook</p>
+
+          <div class="type-switcher">
+            <button id="typeReelBtn" class="type-btn active" onclick="setPostType('reel')">🎬 Đăng Reel</button>
+            <button id="typePhotoBtn" class="type-btn" onclick="setPostType('photo')">🖼️ Đăng Ảnh / Album</button>
+          </div>
+
+          <form id="composerForm" onsubmit="handlePublish(event)">
+            
+            <!-- Quick Pick Saved Page -->
+            <div class="form-group">
+              <label class="form-label">Chọn Fanpage đích (Đã lưu)</label>
+              <select id="quickSavedPage" class="form-select" onchange="onQuickPageSelected(this)">
+                <option value="">-- Chọn Fanpage đã cấu hình --</option>
+              </select>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+              <div class="form-group">
+                <label class="form-label">Chrome Profile / Nick thực hiện</label>
+                <select id="targetExtension" class="form-select">
+                  <option value="">-- Tự động theo Fanpage / Nick online --</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">Fanpage ID</label>
+                <input type="text" id="targetPageId" class="form-control" placeholder="ID Trang (hoặc để trống nếu đăng Profile)">
+              </div>
+            </div>
+
+            <!-- Media Source Mode: Upload vs Local Path -->
+            <div class="form-group">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 6px;">
+                <label class="form-label" id="mediaUploadLabel" style="margin-bottom:0;">Nguồn Media</label>
+                <div class="sub-tabs">
+                  <button type="button" id="mediaModeUploadBtn" class="sub-tab-btn active" onclick="setMediaMode('upload')">📤 Tải tệp lên</button>
+                  <button type="button" id="mediaModePathBtn" class="sub-tab-btn" onclick="setMediaMode('path')">📁 Nhập đường dẫn file</button>
+                </div>
+              </div>
+
+              <!-- Upload File Box -->
+              <div id="uploadMediaBox">
+                <div class="dropzone" id="dropzone">
+                  <div class="dropzone-icon">📁</div>
+                  <p id="dropzoneText">Kéo thả file vào đây hoặc <strong>Bấm để chọn file</strong></p>
+                  <input type="file" id="mediaFileInput" onchange="handleFileSelected(event)">
+                </div>
+              </div>
+
+              <!-- Local File Path Box -->
+              <div id="pathMediaBox" style="display: none;">
+                <div style="display: flex; gap: 8px;">
+                  <input type="text" id="localPathInput" class="form-control" placeholder="Ví dụ: C:\Users\nguye\Videos\reel_clip01.mp4 hoặc D:\downloads\video.mp4">
+                  <button type="button" class="btn btn-secondary" onclick="handleStageLocalPath()">Kiểm tra & Nạp</button>
+                </div>
+                <span style="font-size: 0.75rem; color: var(--text-sub); margin-top: 4px; display: block;">
+                  💡 Thích hợp khi bot tự download video về một thư mục trên máy tính rồi nạp trực tiếp đường dẫn mà không cần tải lại qua trình duyệt.
+                </span>
+              </div>
+
+              <!-- Media Preview -->
+              <div id="mediaPreview" class="media-preview-container">
+                <video id="videoPreviewEl" class="preview-thumb" style="display:none;" controls></video>
+                <img id="imagePreviewEl" class="preview-thumb" style="display:none;">
+                <div class="preview-info">
+                  <strong id="previewFileName">filename.mp4</strong>
+                  <span id="previewFileSize" style="color: var(--text-muted);">0 MB</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Caption -->
+            <div class="form-group">
+              <label class="form-label">Nội dung bài đăng (Caption & Hashtags)</label>
+              <textarea id="captionInput" class="form-control" rows="4" placeholder="Nhập caption của bài viết..."></textarea>
+              <div class="chip-group">
+                <span class="chip" onclick="addHashtag('#reels')">#reels</span>
+                <span class="chip" onclick="addHashtag('#viral')">#viral</span>
+                <span class="chip" onclick="addHashtag('#xuhuong')">#xuhuong</span>
+                <span class="chip" onclick="addHashtag('#trending')">#trending</span>
+                <span class="chip" onclick="addHashtag('#reviewphim')">#reviewphim</span>
+                <span class="chip" onclick="addHashtag('#haihuoc')">#haihuoc</span>
+              </div>
+            </div>
+
+            <!-- Schedule -->
+            <div class="form-group">
+              <label style="display: flex; align-items: center; gap: 8px; font-size: 0.85rem; cursor: pointer;">
+                <input type="checkbox" id="scheduleCheckbox" onchange="toggleScheduleInput()">
+                <span>Lên lịch hẹn giờ đăng (Schedule)</span>
+              </label>
+              <div id="scheduleTimeWrapper" style="display: none; margin-top: 8px;">
+                <input type="datetime-local" id="scheduleTimeInput" class="form-control">
+              </div>
+            </div>
+
+            <button type="submit" id="submitPostBtn" class="btn btn-primary" style="width: 100%;">
+              <span>🚀 BẤM ĐĂNG BÀI</span>
+            </button>
+          </form>
+
+          <div id="resultBox" class="result-box"></div>
+        </div>
+      </section>
+
+        <div class="card">
+          <h3 class="card-title">📑 Danh sách Fanpage Quản lý</h3>
+          <p class="card-subtitle">Lưu trữ danh sách các Fanpage để đăng bài nhanh và tự động định tuyến Nick</p>
+
+          <form id="addPageForm" onsubmit="handleAddPage(event)" style="display: grid; grid-template-columns: 2fr 2fr 2fr 1fr; gap: 10px; margin-bottom: 1.5rem;">
+            <input type="text" id="newPageId" class="form-control" placeholder="Fanpage ID (bắt buộc)" required>
+            <input type="text" id="newPageName" class="form-control" placeholder="Tên Fanpage" required>
+            <select id="newPageExtId" class="form-select">
+              <option value="">-- Nick quản lý (Tùy chọn) --</option>
+            </select>
+            <button type="submit" class="btn btn-primary">+ Lưu Page</button>
+          </form>
+
+          <div class="table-responsive">
+            <table>
+              <thead>
+                <tr>
+                  <th>Tên Fanpage</th>
+                  <th>Fanpage ID</th>
+                  <th>Nick quản lý</th>
+                  <th>Ghi chú</th>
+                  <th>Thao tác</th>
+                </tr>
+              </thead>
+              <tbody id="pagesTableBody">
+                <tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Đang tải danh sách page...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 4: DÀN TÀI KHOẢN -->
+      <section id="tab-accounts" class="tab-content">
+        <div class="card">
+          <h3 class="card-title">👥 Danh sách Chrome Profile & Nick Facebook</h3>
+          <p class="card-subtitle">Các phiên trình duyệt Facebook đang kết nối trực tiếp với hệ thống</p>
+          <div id="extGrid" class="ext-grid">
+            <p style="color: var(--text-muted);">Đang quét các extension...</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 5: LỊCH SỬ ĐĂNG -->
+      <section id="tab-history" class="tab-content">
+        <div class="card">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+            <div>
+              <h3 class="card-title">📜 Lịch sử xuất bản bài viết</h3>
+              <p class="card-subtitle" style="margin-bottom:0;">Danh sách các bài viết đã được đẩy qua Facebook</p>
+            </div>
+            <button class="btn btn-secondary" onclick="clearHistory()">Xóa lịch sử</button>
+          </div>
+          <div class="table-responsive">
+            <table>
+              <thead>
+                <tr>
+                  <th>Loại</th>
+                  <th>Caption</th>
+                  <th>Profile / Page</th>
+                  <th>Thời gian</th>
+                  <th>Trạng thái</th>
+                  <th>Link Facebook</th>
+                </tr>
+              </thead>
+              <tbody id="historyTableBody">
+                <tr><td colspan="6" style="text-align: center; color: var(--text-muted);">Chưa có lịch sử bài đăng nào.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 6: MẪU CAPTURE -->
+      <section id="tab-templates" class="tab-content">
+        <div class="card">
+          <h3 class="card-title">🧩 Trạng thái Mẫu Capture (Template Matrix)</h3>
+          <p class="card-subtitle">Kiểm tra bộ khung upload và đăng bài đã được học từ Facebook chưa</p>
+          <div class="table-responsive">
+            <table>
+              <thead>
+                <tr>
+                  <th>Extension ID</th>
+                  <th>Mẫu Reels (`graphql`)</th>
+                  <th>Mẫu Ảnh (`graphql_photo`)</th>
+                  <th>Chuyển Profile (`switch`)</th>
+                  <th>Lần cập nhật cuối</th>
+                </tr>
+              </thead>
+              <tbody id="templateTableBody">
+                <tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Đang tải dữ liệu template...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 7: TELEGRAM BOT -->
+      <section id="tab-telegram" class="tab-content">
+        <div class="card">
+          <h3 class="card-title">🤖 Cấu hình Telegram Bot</h3>
+          <p class="card-subtitle">Điều khiển đăng bài từ xa qua tin nhắn Telegram và nhận thông báo tự động</p>
+
+          <form id="tgConfigForm" onsubmit="saveTelegramConfig(event)" style="max-width: 680px;">
+            <div class="form-group">
+              <label class="form-label">Telegram Bot Token</label>
+              <input type="text" id="tgTokenInput" class="form-control" placeholder="1234567890:ABCdefGhIJKlmNoPQRsTUVwxyZ..." required>
+              <span style="font-size:0.75rem; color:var(--text-sub); margin-top:3px; display:block;">
+                Lấy mã Token bằng cách chat với <strong>@BotFather</strong> trên Telegram.
+              </span>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">Telegram Chat ID</label>
+              <input type="text" id="tgChatIdInput" class="form-control" placeholder="123456789 hoặc -100123456789" required>
+              <span style="font-size:0.75rem; color:var(--text-sub); margin-top:3px; display:block;">
+                ID tài khoản hoặc ID nhóm Telegram của bạn (Lấy qua bot <strong>@userinfobot</strong>).
+              </span>
+            </div>
+
+            <div class="form-group" style="background: rgba(15, 23, 42, 0.4); padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--card-border);">
+              <label style="display: flex; align-items: center; gap: 8px; font-size: 0.88rem; cursor: pointer; margin-bottom: 8px;">
+                <input type="checkbox" id="tgEnabledCheckbox" checked>
+                <span><strong>Bật Telegram Bot</strong> (Cho phép nhận lệnh và gửi video để đăng)</span>
+              </label>
+              <label style="display: flex; align-items: center; gap: 8px; font-size: 0.88rem; cursor: pointer;">
+                <input type="checkbox" id="tgAutoPostCheckbox" checked>
+                <span><strong>Tự động gửi thông báo</strong> kết quả xuất bản bài viết về Telegram</span>
+              </label>
+            </div>
+
+            <div style="display: flex; gap: 10px; margin-top: 1.5rem;">
+              <button type="submit" class="btn btn-primary">💾 Lưu Cấu hình</button>
+              <button type="button" class="btn btn-secondary" onclick="testTelegramBot()">🔔 Gửi Tin Nhắn Test</button>
+            </div>
+          </form>
+
+          <div id="tgTestResult" style="margin-top: 1rem; display: none; padding: 12px; border-radius: 8px; font-size: 0.88rem;"></div>
+        </div>
+
+        <div class="card">
+          <h3 class="card-title">📖 Hướng dẫn sử dụng Telegram Bot</h3>
+          <div style="font-size: 0.88rem; line-height: 1.8; color: #cbd5e1;">
+            <p>1. <strong>Đăng bài:</strong> Gửi trực tiếp file Video (.mp4) hoặc Ảnh kèm Caption vào Telegram Bot. Bot sẽ hiện nút bấm chọn Fanpage để đăng ngay.</p>
+            <p>2. <strong>Lệnh <code>/status</code>:</strong> Kiểm tra xem có bao nhiêu Chrome Profile đang online.</p>
+            <p>3. <strong>Lệnh <code>/pages</code>:</strong> Xem danh sách các Fanpage đang quản lý.</p>
+            <p>4. <strong>Lệnh <code>/history</code>:</strong> Xem 5 bài đăng mới nhất kèm Link bài viết Facebook.</p>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <script>
+    let currentTab = 'overview';
+    let currentPostType = 'reel';
+    let currentMediaMode = 'upload'; // 'upload' | 'path'
+    let uploadedMediaUrl = null;
+    let savedPagesList = [];
+
+    function switchTab(tabId) {
+      currentTab = tabId;
+      document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+
+      const targetBtn = Array.from(document.querySelectorAll('.nav-item')).find(b => b.getAttribute('onclick')?.includes(tabId));
+      if (targetBtn) targetBtn.classList.add('active');
+
+      const targetTab = document.getElementById(`tab-${tabId}`);
+      if (targetTab) targetTab.classList.add('active');
+
+      if (tabId === 'pages') loadPages();
+      if (tabId === 'telegram') loadTelegramConfig();
+      if (tabId === 'history') loadHistory();
+      if (tabId === 'templates') loadTemplates();
+    }
+
+    function setPostType(type) {
+      currentPostType = type;
+      document.getElementById('typeReelBtn').classList.toggle('active', type === 'reel');
+      document.getElementById('typePhotoBtn').classList.toggle('active', type === 'photo');
+
+      const label = document.getElementById('mediaUploadLabel');
+      const input = document.getElementById('mediaFileInput');
+      if (type === 'reel') {
+        label.textContent = 'Chọn Video Reels (.mp4)';
+        input.accept = '.mp4,.mov';
+      } else {
+        label.textContent = 'Chọn Hình ảnh (.jpg, .png)';
+        input.accept = '.jpg,.jpeg,.png';
+      }
+    }
+
+    function setMediaMode(mode) {
+      currentMediaMode = mode;
+      document.getElementById('mediaModeUploadBtn').classList.toggle('active', mode === 'upload');
+      document.getElementById('mediaModePathBtn').classList.toggle('active', mode === 'path');
+
+      document.getElementById('uploadMediaBox').style.display = mode === 'upload' ? 'block' : 'none';
+      document.getElementById('pathMediaBox').style.display = mode === 'path' ? 'block' : 'none';
+    }
+
+    function toggleScheduleInput() {
+      const checked = document.getElementById('scheduleCheckbox').checked;
+      document.getElementById('scheduleTimeWrapper').style.display = checked ? 'block' : 'none';
+    }
+
+    function addHashtag(tag) {
+      const cap = document.getElementById('captionInput');
+      cap.value = (cap.value.trim() ? cap.value.trim() + ' ' : '') + tag;
+    }
+
+    // Stage local file path
+    async function handleStageLocalPath() {
+      const pathVal = document.getElementById('localPathInput').value.trim();
+      if (!pathVal) {
+        alert('Vui lòng nhập đường dẫn file video/ảnh trên máy tính!');
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/stage-local-path', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ localPath: pathVal }),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          uploadedMediaUrl = data.url;
+          displayMediaPreview(data);
+          alert('✅ Nạp file thành công: ' + data.filename);
+        } else {
+          alert('Lỗi nạp file: ' + (data.detail || 'Không tìm thấy file'));
+        }
+      } catch (err) {
+        alert('Lỗi kết nối: ' + err.message);
+      }
+    }
+
+    // Upload file
+    async function handleFileSelected(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      const fd = new FormData();
+      fd.append('file', file);
+      document.getElementById('dropzoneText').textContent = '⏳ Đang tải file lên máy chủ...';
+
+      try {
+        const res = await fetch('/api/upload-media', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (data.ok) {
+          uploadedMediaUrl = data.url;
+          document.getElementById('dropzoneText').textContent = `✅ Đã tải: ${data.filename}`;
+          displayMediaPreview(data);
+        } else {
+          alert('Lỗi tải file: ' + (data.detail || 'Không xác định'));
+        }
+      } catch (err) {
+        alert('Lỗi kết nối khi tải file: ' + err.message);
+      }
+    }
+
+    function displayMediaPreview(data) {
+      const previewBox = document.getElementById('mediaPreview');
+      const videoEl = document.getElementById('videoPreviewEl');
+      const imageEl = document.getElementById('imagePreviewEl');
+      document.getElementById('previewFileName').textContent = data.filename;
+      document.getElementById('previewFileSize').textContent = (data.sizeBytes / (1024 * 1024)).toFixed(2) + ' MB';
+
+      if (data.mediaType === 'video') {
+        videoEl.src = data.url;
+        videoEl.style.display = 'block';
+        imageEl.style.display = 'none';
+      } else {
+        imageEl.src = data.url;
+        imageEl.style.display = 'block';
+        videoEl.style.display = 'none';
+      }
+      previewBox.classList.add('show');
+    }
+
+    // Load & Save Fanpages
+    async function loadPages() {
+      try {
+        const res = await fetch('/api/pages');
+        const data = await res.json();
+        savedPagesList = data.items || [];
+        document.getElementById('statPageCount').textContent = savedPagesList.length;
+
+        // Render table
+        const tbody = document.getElementById('pagesTableBody');
+        if (!savedPagesList.length) {
+          tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--text-muted);">Chưa có Fanpage nào được lưu.</td></tr>';
+        } else {
+          tbody.innerHTML = savedPagesList.map(p => `
+            <tr>
+              <td><strong style="cursor: pointer; color: var(--accent);" title="Bấm để đổi tên" onclick="renamePage('${p.id}', '${p.name.replace(/'/g, "\\'")}')">${p.name} ✏️</strong></td>
+              <td><code>${p.id}</code></td>
+              <td>${p.extensionId ? p.extensionId.slice(0, 8) + '...' : 'Tự động'}</td>
+              <td>${p.note || '-'}</td>
+              <td>
+                <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.75rem; margin-right: 6px;" onclick="renamePage('${p.id}', '${p.name.replace(/'/g, "\\'")}')">✏️ Đổi tên</button>
+                <button class="btn btn-danger" style="padding: 4px 10px; font-size: 0.75rem;" onclick="deletePage('${p.id}')">Xóa</button>
+              </td>
+            </tr>
+          `).join('');
+        }
+
+        // Render quick dropdown
+        const quickSelect = document.getElementById('quickSavedPage');
+        let opts = '<option value="">-- Chọn Fanpage đã cấu hình --</option>';
+        savedPagesList.forEach(p => {
+          opts += `<option value="${p.id}" data-ext="${p.extensionId || ''}">${p.name} (${p.id})</option>`;
+        });
+        quickSelect.innerHTML = opts;
+      } catch (e) {
+        console.warn('Load pages error:', e);
+      }
+    }
+
+    async function renamePage(id, oldName) {
+      const newName = prompt(`Nhập tên mới cho Fanpage (${id}):`, oldName);
+      if (!newName || !newName.trim() || newName.trim() === oldName) return;
+      try {
+        const res = await fetch('/api/pages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id, name: newName.trim() }),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          loadPages();
+        }
+      } catch (err) {
+        alert('Lỗi đổi tên: ' + err.message);
+      }
+    }
+
+    function onQuickPageSelected(selectEl) {
+      const opt = selectEl.options[selectEl.selectedIndex];
+      if (!opt || !opt.value) return;
+
+      document.getElementById('targetPageId').value = opt.value;
+      const extId = opt.getAttribute('data-ext');
+      if (extId) {
+        document.getElementById('targetExtension').value = extId;
+      }
+    }
+
+    async function handleAddPage(e) {
+      e.preventDefault();
+      const id = document.getElementById('newPageId').value.trim();
+      const name = document.getElementById('newPageName').value.trim();
+      const extensionId = document.getElementById('newPageExtId').value || null;
+
+      try {
+        const res = await fetch('/api/pages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id, name, extensionId }),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          document.getElementById('newPageId').value = '';
+          document.getElementById('newPageName').value = '';
+          loadPages();
+          alert('✅ Đã lưu Fanpage thành công!');
+        }
+      } catch (err) {
+        alert('Lỗi lưu page: ' + err.message);
+      }
+    }
+
+    async function deletePage(id) {
+      if (!confirm(`Xóa Fanpage ID ${id}?`)) return;
+      await fetch(`/api/pages/${id}`, { method: 'DELETE' });
+      loadPages();
+    }
+
+    // Publish form
+    async function handlePublish(e) {
+      e.preventDefault();
+      const resBox = document.getElementById('resultBox');
+      const submitBtn = document.getElementById('submitPostBtn');
+      resBox.className = 'result-box';
+      resBox.style.display = 'none';
+
+      if (!uploadedMediaUrl) {
+        alert('Vui lòng nạp hoặc tải file media trước khi đăng!');
+        return;
+      }
+
+      const caption = document.getElementById('captionInput').value;
+      const extensionId = document.getElementById('targetExtension').value || null;
+      const pageId = document.getElementById('targetPageId').value.trim() || null;
+
+      let scheduleSeconds = null;
+      if (document.getElementById('scheduleCheckbox').checked) {
+        const dateVal = document.getElementById('scheduleTimeInput').value;
+        if (dateVal) {
+          scheduleSeconds = Math.floor(new Date(dateVal).getTime() / 1000);
+        }
+      }
+
+      submitBtn.disabled = true;
+      submitBtn.innerHTML = '<span>⏳ Đang xử lý đăng bài qua Facebook...</span>';
+
+      try {
+        let endpoint = currentPostType === 'reel' ? '/post-reel' : '/post-photos';
+        let body = {};
+        if (currentPostType === 'reel') {
+          body = { videoUrl: uploadedMediaUrl, caption, pageId, extensionId, scheduledPublishTime: scheduleSeconds };
+        } else {
+          body = { imageUrls: [uploadedMediaUrl], caption, pageId, extensionId, scheduledPublishTime: scheduleSeconds };
+        }
+
+        const resp = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+
+        const result = await resp.json();
+        if (resp.ok && result.ok) {
+          resBox.className = 'result-box success';
+          let linkHtml = result.permalinkUrl ? `<p style="margin-top:6px;">👉 <a href="${result.permalinkUrl}" target="_blank" style="color:#67e8f9; font-weight:bold;">Xem bài đăng trên Facebook</a></p>` : '';
+          resBox.innerHTML = `<strong>🎉 Xuất bản thành công!</strong><p>ID: ${result.videoId || result.postId || 'OK'}</p>${linkHtml}`;
+        } else {
+          resBox.className = 'result-box error';
+          resBox.innerHTML = `<strong>❌ Đăng bài thất bại:</strong><p>${result.detail || result.error || JSON.stringify(result)}</p>`;
+        }
+      } catch (err) {
+        resBox.className = 'result-box error';
+        resBox.innerHTML = `<strong>❌ Lỗi kết nối:</strong><p>${err.message}</p>`;
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = '<span>🚀 BẤM ĐĂNG BÀI</span>';
+      }
+    }
+
+    // Auto-poll
+    async function pollState() {
+      try {
+        const [healthRes, extRes] = await Promise.all([
+          fetch('/api/health').then(r => r.json()),
+          fetch('/api/extensions').then(r => r.json()).catch(() => ({ items: [] }))
+        ]);
+
+        const dot = document.getElementById('connectionDot');
+        const text = document.getElementById('connectionText');
+        const pill = document.getElementById('connectionPill');
+        if (healthRes.extension_connected) {
+          dot.className = 'dot';
+          text.textContent = 'Đã kết nối Extension';
+          pill.className = 'pill online';
+        } else {
+          dot.className = 'dot offline';
+          text.textContent = 'Chưa kết nối Extension';
+          pill.className = 'pill';
+        }
+
+        const count = healthRes.extension_count || (extRes.items ? extRes.items.length : 0);
+        document.getElementById('extCountPill').textContent = `${count} Profile Online`;
+        document.getElementById('statExtCount').textContent = count;
+        document.getElementById('statReelTpl').textContent = healthRes.has_template ? '✅ Sẵn sàng' : '⚠️ Chưa có';
+
+        // Update dropdown extensions
+        const select = document.getElementById('targetExtension');
+        const pageExtSelect = document.getElementById('newPageExtId');
+        const currentVal = select.value;
+        let opts = '<option value="">-- Tự động theo Fanpage / Nick online --</option>';
+        let pageOpts = '<option value="">-- Nick quản lý (Tùy chọn) --</option>';
+        if (extRes.items) {
+          extRes.items.forEach(ext => {
+            const label = ext.fbUser ? `${ext.fbUser.name || 'Nick'} (${ext.id.slice(0, 8)})` : `Profile: ${ext.id.slice(0, 8)}`;
+            opts += `<option value="${ext.id}">${label}</option>`;
+            pageOpts += `<option value="${ext.id}">${label}</option>`;
+          });
+        }
+        select.innerHTML = opts;
+        select.value = currentVal;
+        pageExtSelect.innerHTML = pageOpts;
+
+        renderAccounts(extRes.items || []);
+      } catch (e) {
+        console.warn('Poll error:', e);
+      }
+    }
+
+    function renderAccounts(items) {
+      const container = document.getElementById('extGrid');
+      if (!items.length) {
+        container.innerHTML = '<p style="color: var(--text-muted); grid-column: 1/-1;">Chưa có Chrome Profile nào đang kết nối. Vui lòng mở Chrome đã cài Extension.</p>';
+        return;
+      }
+
+      container.innerHTML = items.map(ext => {
+        const name = ext.fbUser?.name || 'Facebook User';
+        const uid = ext.fbUser?.id || 'Chưa đọc UID';
+        const initial = name.charAt(0).toUpperCase();
+        return `
+          <div class="ext-card">
+            <div class="ext-head">
+              <div class="ext-avatar">${initial}</div>
+              <div class="ext-info">
+                <h4>${name}</h4>
+                <span>ID: ${ext.id.slice(0, 8)}...</span>
+              </div>
+            </div>
+            <div style="font-size:0.8rem; color:var(--text-muted);">
+              <p>UID: <strong>${uid}</strong></p>
+              <p>Đã gửi: <strong>${ext.requestCount || 0}</strong> lệnh (Thành công: ${ext.successCount || 0})</p>
+            </div>
+            <button class="btn btn-secondary" style="font-size:0.8rem; padding: 6px 12px;" onclick="testIdentity('${ext.id}')">🔍 Đọc danh tính</button>
+          </div>
+        `;
+      }).join('');
+    }
+
+    async function testIdentity(extId) {
+      try {
+        const res = await fetch(`/api/current-identity?extension_id=${extId}`);
+        const data = await res.json();
+        alert(`Danh tính hiện tại:\nTên: ${data.name || 'Không rõ'}\nID: ${data.id || 'Không rõ'}`);
+      } catch (e) {
+        alert('Lỗi: ' + e.message);
+      }
+    }
+
+    async function loadHistory() {
+      try {
+        const res = await fetch('/api/history');
+        const data = await res.json();
+        const tbody = document.getElementById('historyTableBody');
+        const items = data.items || [];
+        document.getElementById('statTotalPosts').textContent = items.length;
+
+        if (!items.length) {
+          tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--text-muted);">Chưa có lịch sử bài đăng nào.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = items.map(item => {
+          const badgeClass = item.status === 'succeeded' ? 'badge-success' : item.status === 'failed' ? 'badge-failed' : 'badge-running';
+          const statusText = item.status === 'succeeded' ? 'Thành công' : item.status === 'failed' ? 'Thất bại' : 'Đang xử lý';
+          const link = item.result?.permalinkUrl ? `<a href="${item.result.permalinkUrl}" target="_blank" style="color:var(--accent);">Xem bài viết ↗</a>` : '-';
+          const date = new Date(item.createdAt * 1000).toLocaleTimeString('vi-VN') + ' ' + new Date(item.createdAt * 1000).toLocaleDateString('vi-VN');
+          return `
+            <tr>
+              <td><strong>${item.kind === 'post_reel' ? '🎬 Reel' : '🖼️ Ảnh'}</strong></td>
+              <td style="max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${item.caption || '(Không có caption)'}</td>
+              <td>${item.pageId || item.extensionId?.slice(0, 8) || 'Mặc định'}</td>
+              <td style="color: var(--text-sub);">${date}</td>
+              <td><span class="badge ${badgeClass}">${statusText}</span></td>
+              <td>${link}</td>
+            </tr>
+          `;
+        }).join('');
+      } catch (e) {
+        console.warn('History error:', e);
+      }
+    }
+
+    async function clearHistory() {
+      if (!confirm('Bạn có chắc muốn xóa toàn bộ lịch sử đăng?')) return;
+      await fetch('/api/history', { method: 'DELETE' });
+      loadHistory();
+    }
+
+    async function loadTemplates() {
+      try {
+        const [extRes, tplRes] = await Promise.all([
+          fetch('/api/extensions').then(r => r.json()).catch(() => ({ items: [] })),
+          fetch('/api/template').then(r => r.json()).catch(() => ({}))
+        ]);
+
+        const tbody = document.getElementById('templateTableBody');
+        const items = extRes.items || [];
+        if (!items.length) {
+          tbody.innerHTML = `
+            <tr>
+              <td><strong>Mặc định (Root)</strong></td>
+              <td>${tplRes.graphql ? '✅ Đã bắt mẫu' : '❌ Chưa có'}</td>
+              <td>${tplRes.graphql_photo ? '✅ Đã bắt mẫu' : '❌ Chưa có'}</td>
+              <td>${tplRes.graphql_ops?.CometProfileSwitchMutation ? '✅ Đã bắt mẫu' : '❌ Chưa có'}</td>
+              <td>${tplRes.updatedAt ? new Date(tplRes.updatedAt * 1000).toLocaleString('vi-VN') : '-'}</td>
+            </tr>
+          `;
+          return;
+        }
+
+        tbody.innerHTML = items.map(ext => `
+          <tr>
+            <td><strong>${ext.id.slice(0, 8)}... (${ext.fbUser?.name || 'User'})</strong></td>
+            <td>✅ Sẵn sàng</td>
+            <td>✅ Sẵn sàng</td>
+            <td>✅ Sẵn sàng</td>
+            <td>${new Date(ext.lastActiveAt * 1000).toLocaleTimeString('vi-VN')}</td>
+          </tr>
+        `).join('');
+      } catch (e) {
+        console.warn('Template matrix error:', e);
+      }
+    }
+
+    // Telegram Bot Management
+    async function loadTelegramConfig() {
+      try {
+        const res = await fetch('/api/telegram/config');
+        const data = await res.json();
+        document.getElementById('tgTokenInput').value = data.token || '';
+        document.getElementById('tgChatIdInput').value = data.chatId || '';
+        document.getElementById('tgEnabledCheckbox').checked = Boolean(data.enabled);
+        document.getElementById('tgAutoPostCheckbox').checked = Boolean(data.autoPost);
+      } catch (e) {
+        console.warn('Load Telegram config error:', e);
+      }
+    }
+
+    async function saveTelegramConfig(e) {
+      e.preventDefault();
+      const token = document.getElementById('tgTokenInput').value.trim();
+      const chatId = document.getElementById('tgChatIdInput').value.trim();
+      const enabled = document.getElementById('tgEnabledCheckbox').checked;
+      const autoPost = document.getElementById('tgAutoPostCheckbox').checked;
+
+      try {
+        const res = await fetch('/api/telegram/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token, chatId, enabled, autoPost }),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          alert('✅ Đã lưu cấu hình Telegram Bot thành công!');
+        } else {
+          alert('Lỗi lưu cấu hình: ' + (data.detail || 'Không xác định'));
+        }
+      } catch (err) {
+        alert('Lỗi kết nối: ' + err.message);
+      }
+    }
+
+    async function testTelegramBot() {
+      const token = document.getElementById('tgTokenInput').value.trim();
+      const chatId = document.getElementById('tgChatIdInput').value.trim();
+      const resBox = document.getElementById('tgTestResult');
+      resBox.style.display = 'block';
+      resBox.style.background = 'rgba(99, 102, 241, 0.1)';
+      resBox.style.color = '#c7d2fe';
+      resBox.innerHTML = '⏳ Đang gửi tin nhắn test tới Telegram...';
+
+      try {
+        const res = await fetch('/api/telegram/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token, chatId }),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          resBox.style.background = 'rgba(16, 185, 129, 0.1)';
+          resBox.style.color = '#6ee7b7';
+          resBox.innerHTML = '🎉 <b>Gửi tin nhắn test thành công!</b> Vui lòng kiểm tra Telegram của bạn.';
+        } else {
+          resBox.style.background = 'rgba(244, 63, 94, 0.1)';
+          resBox.style.color = '#fda4af';
+          resBox.innerHTML = `❌ <b>Gửi thất bại:</b> ${data.error || data.detail || 'Không xác định'}`;
+        }
+      } catch (err) {
+        resBox.style.background = 'rgba(244, 63, 94, 0.1)';
+        resBox.style.color = '#fda4af';
+        resBox.innerHTML = `❌ <b>Lỗi kết nối:</b> ${err.message}`;
+      }
+    }
+
+    async function launchChromeProfiles() {
+      try {
+        const res = await fetch('/api/launch-profiles', { method: 'POST' });
+        const data = await res.json();
+        if (data.ok) {
+          alert('🚀 Đã kích hoạt các Profile Chrome chạy ngầm!');
+          setTimeout(pollState, 2000);
+        } else {
+          alert('Không thể kích hoạt: ' + (data.detail || 'Lỗi không xác định'));
+        }
+      } catch (err) {
+        alert('Lỗi kết nối: ' + err.message);
+      }
+    }
+
+    // Startup
+    pollState();
+    loadPages();
+    loadTelegramConfig();
+    setInterval(pollState, 3000);
+  </script>
+</body>
 </html>

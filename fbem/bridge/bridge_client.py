@@ -26,175 +26,253 @@ import logging
 import secrets
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
 
+class ExtensionSession:
+    """Represents an active connection from a single Chrome Profile extension."""
+
+    def __init__(self, ws: Any, extension_id: str) -> None:
+        self.ws = ws
+        self.extension_id = extension_id
+        self.fb_user: Optional[dict] = None
+        self.last_active_at: float = time.time()
+        self.connected_at: float = time.time()
+        self.request_count = 0
+        self.success_count = 0
+        self.failed_count = 0
+        self.last_error: Optional[str] = None
+        self.pending: dict[str, asyncio.Future] = {}
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.extension_id,
+            "connected": True,
+            "connectedAt": int(self.connected_at),
+            "lastActiveAt": int(self.last_active_at),
+            "fbUser": self.fb_user,
+            "pending": len(self.pending),
+            "requestCount": self.request_count,
+            "successCount": self.success_count,
+            "failedCount": self.failed_count,
+            "lastError": self.last_error,
+        }
+
+
 class BridgeClient:
-    """Singleton bridge client."""
+    """Multi-session bridge client managing WebSocket connections to Chrome extensions."""
 
     DEFAULT_TIMEOUT = 180.0  # seconds
 
     def __init__(self) -> None:
-        self._ws: Optional[Any] = None
-        self._pending: dict[str, asyncio.Future] = {}
-        self._callback_secret: str = secrets.token_urlsafe(32)
+        self._sessions: dict[str, ExtensionSession] = {}
+        self._ws_to_id: dict[Any, str] = {}
+        sec_file = Path.home() / ".fbem" / "bridge_secret.txt"
+        if sec_file.exists():
+            self._callback_secret = sec_file.read_text(encoding="utf-8").strip()
+        else:
+            self._callback_secret = secrets.token_urlsafe(32)
+            try:
+                sec_file.parent.mkdir(parents=True, exist_ok=True)
+                sec_file.write_text(self._callback_secret, encoding="utf-8")
+            except Exception:
+                pass
 
-        # Profile pushed by the extension (e.g. the logged-in FB user). Stays
-        # in-memory only; the extension replays it on the next WS reconnect.
-        self._fb_user: Optional[dict] = None
-        # Freshness anchor for the tab TTL: set on (re)connect and whenever the
-        # extension reports it just (re)loaded the tab (`last_active`). The
-        # extension auto-reloads every TTL window so this never goes stale.
-        self._last_active_at: Optional[float] = None
-        self._request_count = 0
-        self._success_count = 0
-        self._failed_count = 0
-        self._last_error: Optional[str] = None
-
-    # ── connection ─────────────────────────────────────────────────────────
-    @property
-    def connected(self) -> bool:
-        return self._ws is not None
-
+    # ── connection management ──────────────────────────────────────────────
     @property
     def callback_secret(self) -> str:
         return self._callback_secret
 
+    def _prune_dead_sessions(self) -> None:
+        now = time.time()
+        dead_ws = []
+        for ws, ext_id in list(self._ws_to_id.items()):
+            is_closed = getattr(ws, "closed", False)
+            if is_closed:
+                dead_ws.append(ws)
+            elif ext_id in self._sessions:
+                s = self._sessions[ext_id]
+                # If inactive for too long and connection not responding
+                if now - s.last_active_at > 180.0 and is_closed:
+                    dead_ws.append(ws)
+        for ws in dead_ws:
+            self.unregister_extension(ws)
+
+    @property
+    def connected(self) -> bool:
+        self._prune_dead_sessions()
+        return bool(self._sessions)
+
+    @property
+    def extension_count(self) -> int:
+        self._prune_dead_sessions()
+        return len(self._sessions)
+
+    def list_extensions(self) -> list[dict]:
+        self._prune_dead_sessions()
+        return [s.to_dict() for s in self._sessions.values()]
+
+    def get_session(self, extension_id: Optional[str] = None) -> Optional[ExtensionSession]:
+        self._prune_dead_sessions()
+        if extension_id and extension_id in self._sessions:
+            return self._sessions[extension_id]
+        if not extension_id and self._sessions:
+            # Default to the most recently active session
+            return max(self._sessions.values(), key=lambda s: s.last_active_at)
+        return None
+
+    def register_extension(self, ws: Any, extension_id: Optional[str] = None) -> ExtensionSession:
+        self._prune_dead_sessions()
+        ext_id = extension_id or str(uuid.uuid4())
+        # If ws was previously associated with another ID, unregister it
+        if ws in self._ws_to_id and self._ws_to_id[ws] != ext_id:
+            self.unregister_extension(ws)
+
+        if ext_id in self._sessions:
+            session = self._sessions[ext_id]
+            session.ws = ws
+            session.last_active_at = time.time()
+        else:
+            session = ExtensionSession(ws, ext_id)
+            self._sessions[ext_id] = session
+
+        self._ws_to_id[ws] = ext_id
+        return session
+
+    def unregister_extension(self, ws: Any) -> None:
+        ext_id = self._ws_to_id.pop(ws, None)
+        if ext_id and ext_id in self._sessions:
+            session = self._sessions.pop(ext_id)
+            for fut in session.pending.values():
+                if not fut.done():
+                    fut.set_exception(ConnectionError("extension_disconnected"))
+            session.pending.clear()
+
+    # ── compatibility accessors (default session) ──────────────────────────
     @property
     def fb_user(self) -> Optional[dict]:
-        return self._fb_user
+        s = self.get_session()
+        return s.fb_user if s else None
 
     @property
     def last_active_at(self) -> Optional[float]:
-        return self._last_active_at
-
-    def set_extension(self, ws: Any) -> None:
-        # If an extension is already connected, tear it down cleanly first so
-        # any orphaned pending futures are rejected before the new ws is stored.
-        if self._ws is not None:
-            self.clear_extension()
-        self._ws = ws
-        self._last_active_at = time.time()  # fresh connect anchors the TTL
-
-    def clear_extension(self, ws: Any = None) -> None:
-        # Ignore a teardown from a STALE handler: if a newer connection already
-        # replaced self._ws, the old handler's `finally` must not clobber it nor
-        # reject the new session's in-flight futures.
-        if ws is not None and ws is not self._ws:
-            return
-        self._ws = None
-        # Drop the cached identity — next reconnect will replay.
-        self._fb_user = None
-        for fut in self._pending.values():
-            if not fut.done():
-                fut.set_exception(ConnectionError("extension_disconnected"))
-        self._pending.clear()
+        s = self.get_session()
+        return s.last_active_at if s else None
 
     # ── inbound handling ───────────────────────────────────────────────────
-    async def handle_message(self, data: dict) -> None:
+    async def handle_message(self, ws: Any, data: dict, ext_id: Optional[str] = None) -> ExtensionSession:
+        effective_id = ext_id or data.get("extensionId") or self._ws_to_id.get(ws)
+        session = self.register_extension(ws, effective_id)
+        session.last_active_at = time.time()
+
         t = data.get("type")
         if t == "fb_ready":
-            # WS hello from the extension on (re)connect. Readiness is proven by
-            # live capture activity (see capture_store), not a token flag.
-            self._last_active_at = time.time()
-            logger.info("fb_ready (extension connected)")
-            return
+            if data.get("fbUser"):
+                session.fb_user = data["fbUser"]
+            logger.info("fb_ready (extension %s connected, user: %s)", session.extension_id[:8], session.fb_user)
+            return session
         if t == "last_active":
-            # Extension just (re)loaded the FB tab (periodic TTL refresh) — anchor
-            # freshness to receipt time (ignore client clock).
-            self._last_active_at = time.time()
-            return
+            return session
         if t == "fb_user":
             info = data.get("fbUser")
             if isinstance(info, dict):
-                self._fb_user = info
-                logger.info(
-                    "fb_user captured: %s",
-                    info.get("name") or info.get("id") or "<unknown>",
-                )
-            return
+                session.fb_user = info
+                logger.info("fb_user captured for ext %s: %s", session.extension_id[:8], info.get("name") or info.get("id"))
+            return session
         if t in ("ping", "pong"):
-            return
-        # Inbound response (legacy path; production flow uses HTTP callback)
+            return session
+
+        # Inbound response over WS fallback
         req_id = data.get("id")
-        if req_id and req_id in self._pending:
-            self._resolve(req_id, data)
+        if req_id:
+            if req_id in session.pending:
+                self._resolve(session, req_id, data)
+            else:
+                for s in self._sessions.values():
+                    if req_id in s.pending:
+                        self._resolve(s, req_id, data)
+                        break
+        return session
 
     def resolve_callback(self, data: dict) -> bool:
-        """Called by the HTTP callback endpoint after validating the secret.
-
-        Returns True if a pending future matched.
-        """
+        """Called by the HTTP callback endpoint after validating the secret."""
         req_id = data.get("id")
-        if not req_id or req_id not in self._pending:
+        if not req_id:
             return False
-        self._resolve(req_id, data)
-        return True
 
-    def _resolve(self, req_id: str, data: dict) -> None:
-        fut = self._pending.pop(req_id, None)
+        ext_id = data.get("extensionId")
+        if ext_id and ext_id in self._sessions and req_id in self._sessions[ext_id].pending:
+            self._resolve(self._sessions[ext_id], req_id, data)
+            return True
+
+        # Fallback: search across all active sessions
+        for session in self._sessions.values():
+            if req_id in session.pending:
+                self._resolve(session, req_id, data)
+                return True
+        return False
+
+    def _resolve(self, session: ExtensionSession, req_id: str, data: dict) -> None:
+        fut = session.pending.pop(req_id, None)
         if not fut or fut.done():
             return
-        # Count as failure if (a) an explicit `error` field is set OR
-        # (b) the HTTP status is a 4xx/5xx. Otherwise success.
         status = data.get("status")
         http_error = isinstance(status, int) and status >= 400
         explicit_error = bool(data.get("error"))
         if http_error or explicit_error:
-            self._failed_count += 1
+            session.failed_count += 1
             msg = data.get("error") or f"API_{status}"
-            self._last_error = str(msg)[:200]
+            session.last_error = str(msg)[:200]
             fut.set_result(data)
         else:
-            self._success_count += 1
+            session.success_count += 1
             fut.set_result(data)
 
     # ── outbound ──────────────────────────────────────────────────────────
-    async def notify(self, message: dict) -> bool:
-        """Fire-and-forget WS push to the extension. Returns False when the
-        extension isn't connected so callers can surface a meaningful
-        diagnostic instead of silently losing the message.
-        """
-        ws = self._ws
-        if ws is None:
+    async def notify(self, message: dict, extension_id: Optional[str] = None) -> bool:
+        session = self.get_session(extension_id)
+        if not session or not session.ws:
             return False
         try:
-            await ws.send(json.dumps(message))
+            await session.ws.send(json.dumps(message))
             return True
         except Exception as exc:  # noqa: BLE001
-            logger.warning("notify failed: %s", exc)
+            logger.warning("notify failed on ext %s: %s", session.extension_id[:8], exc)
             return False
 
-    async def _send(self, method: str, params: dict, timeout: Optional[float] = None) -> dict:
-        ws = self._ws
-        if ws is None:
+    async def _send(
+        self, method: str, params: dict, extension_id: Optional[str] = None, timeout: Optional[float] = None
+    ) -> dict:
+        session = self.get_session(extension_id)
+        if not session or not session.ws:
             return {"error": "extension_disconnected"}
 
         req_id = str(uuid.uuid4())
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
-        self._pending[req_id] = fut
-        self._request_count += 1
+        session.pending[req_id] = fut
+        session.request_count += 1
 
         payload = {"id": req_id, "method": method, "params": params}
         try:
-            await ws.send(json.dumps(payload))
+            await session.ws.send(json.dumps(payload))
             return await asyncio.wait_for(fut, timeout=timeout or self.DEFAULT_TIMEOUT)
         except asyncio.TimeoutError:
-            self._pending.pop(req_id, None)
-            self._failed_count += 1
-            self._last_error = "timeout"
+            session.pending.pop(req_id, None)
+            session.failed_count += 1
+            session.last_error = "timeout"
             return {"error": "timeout"}
         except ConnectionError as exc:
-            self._pending.pop(req_id, None)
-            self._failed_count += 1
-            self._last_error = str(exc)
+            session.pending.pop(req_id, None)
+            session.failed_count += 1
+            session.last_error = str(exc)
             return {"error": str(exc)}
         except Exception as exc:  # noqa: BLE001
-            self._pending.pop(req_id, None)
-            self._failed_count += 1
-            self._last_error = str(exc)
+            session.pending.pop(req_id, None)
+            session.failed_count += 1
+            session.last_error = str(exc)
             return {"error": str(exc)}
 
     async def post_reel(
@@ -205,15 +283,9 @@ class BridgeClient:
         template: dict,
         scheduled_publish_time: Optional[int] = None,
         switch_template: Optional[dict] = None,
+        extension_id: Optional[str] = None,
         timeout: float = 300.0,
     ) -> dict:
-        """Drive the extension to publish a native Facebook Reel.
-
-        Sends ``method:"post_reel"`` over WS; the extension fetches the video,
-        reads fresh volatile tokens from the live facebook.com page, performs
-        the rupload + graphql publish using the captured ``template`` shape, and
-        POSTs the result back via the HTTP callback.
-        """
         return await self._send(
             "post_reel",
             {
@@ -224,6 +296,7 @@ class BridgeClient:
                 "template": template,
                 "scheduledPublishTime": scheduled_publish_time,
             },
+            extension_id=extension_id,
             timeout=timeout,
         )
 
@@ -235,15 +308,9 @@ class BridgeClient:
         template: dict,
         scheduled_publish_time: Optional[int] = None,
         switch_template: Optional[dict] = None,
+        extension_id: Optional[str] = None,
         timeout: float = 300.0,
     ) -> dict:
-        """Drive the extension to publish a native Facebook photo / album post.
-
-        Sends ``method:"post_photos"`` over WS; the extension fetches each image,
-        uploads the bytes to the native composer photo endpoint to mint photoIDs,
-        then publishes them all in one ComposerStoryCreateMutation using the
-        captured ``template`` shape. A single url = a photo post; many = an album.
-        """
         return await self._send(
             "post_photos",
             {
@@ -254,38 +321,42 @@ class BridgeClient:
                 "template": template,
                 "scheduledPublishTime": scheduled_publish_time,
             },
+            extension_id=extension_id,
             timeout=timeout,
         )
 
-    async def switch_profile(self, target_id: str, switch_template: Optional[dict] = None, timeout: float = 60.0) -> dict:
-        """Switch the logged-in browser session to a target profile/page id via
-        CometProfileSwitchMutation, then reload the tab so the new identity loads.
-        After this, subsequent post_reel/post_photos go out AS that page.
-
-        switch_template is a captured CometProfileSwitchMutation (full body with the
-        __dyn/__csr/__spin_* fingerprints) — a hand-built body is silently rejected."""
+    async def switch_profile(
+        self,
+        target_id: str,
+        switch_template: Optional[dict] = None,
+        extension_id: Optional[str] = None,
+        timeout: float = 60.0,
+    ) -> dict:
         return await self._send(
             "switch_profile",
             {"targetId": target_id, "template": switch_template},
+            extension_id=extension_id,
             timeout=timeout,
         )
 
-    async def get_identity(self, timeout: float = 15.0) -> dict:
-        """Ask the extension which page/profile the FB tab currently posts AS —
-        returns the callback envelope whose `data` holds {identityId, identityName}.
-        Read-only (no switch); used to pre-fill the 'add page' form."""
-        return await self._send("get_identity", {}, timeout=timeout)
+    async def get_identity(self, extension_id: Optional[str] = None, timeout: float = 15.0) -> dict:
+        return await self._send("get_identity", {}, extension_id=extension_id, timeout=timeout)
 
     # ── observability ─────────────────────────────────────────────────────
     @property
     def ws_stats(self) -> dict:
+        total_pending = sum(len(s.pending) for s in self._sessions.values())
+        total_req = sum(s.request_count for s in self._sessions.values())
+        total_succ = sum(s.success_count for s in self._sessions.values())
+        total_fail = sum(s.failed_count for s in self._sessions.values())
         return {
             "connected": self.connected,
-            "pending": len(self._pending),
-            "request_count": self._request_count,
-            "success_count": self._success_count,
-            "failed_count": self._failed_count,
-            "last_error": self._last_error,
+            "extension_count": len(self._sessions),
+            "pending": total_pending,
+            "request_count": total_req,
+            "success_count": total_succ,
+            "failed_count": total_fail,
+            "extensions": self.list_extensions(),
         }
 
 

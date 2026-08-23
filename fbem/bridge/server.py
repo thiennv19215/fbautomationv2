@@ -1,8 +1,26 @@
-"""FBEM bridge - local Facebook native-composer upload bridge to a Chrome extension.
+"""FBEM bridge — local Facebook native-composer upload bridge to a Chrome extension.
 
 It bridges a Chrome MV3 extension over WebSocket (:9224) + HTTP callback (:47102)
-and drives native Facebook Reel / Photo uploads that fire the same internal
-web API the logged-in user's browser uses (NOT the Graph API).
+and drives **native Facebook Reel / Photo uploads** that fire the same internal
+web API the logged-in user's browser uses (NOT the Graph API), plus a **crawler**
+that records the genuine native upload requests when the user manually posts — so
+the replay is template-driven and self-healing.
+
+What it exposes (all on 127.0.0.1):
+  GET  /api/health         — bridge status (extension connected? templates?)
+  POST /post-reel          — { videoUrl, caption, pageId? } → { ok, videoId, permalinkUrl }
+  POST /post-photos        — { imageUrls[], caption, pageId? } → { ok, postId, photoIds, permalinkUrl }
+  POST /switch-profile     — { targetId } → switch the acting page/profile
+  GET  /api/current-identity — page/profile the tab currently posts AS
+  POST /api/ext/callback   — extension POSTs responses here (secret-gated)
+  POST /api/ext/capture    — extension POSTs recorded native requests here (secret-gated)
+  GET  /api/template       — current captured template.json (debug)
+
+Run:
+  fbem-bridge            # or: python -m fbem.bridge
+Then load the Chrome extension (extension/) and open a logged-in facebook.com tab.
+
+This is a LOCAL CONTENT TOOL — loopback-only, never network-reachable.
 """
 from __future__ import annotations
 
@@ -13,30 +31,24 @@ import os
 import shutil
 import time
 from contextlib import asynccontextmanager
-from typing import Optional
-
+from typing import Optional, Any
 from pathlib import Path
+from urllib.parse import quote
 
-from fastapi import FastAPI, Header, HTTPException, File, UploadFile, Form
+from fastapi import FastAPI, Header, HTTPException, UploadFile, File, Form
 from fastapi import Request as FastAPIRequest
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, field_validator
+
 from . import capture_store
-from .config import WS_HOST, media_dir
+from . import history_store
+from . import pages_store
+from ..bot import telegram_service as telegram_bot
+from .config import WS_HOST, HTTP_PORT, media_dir
 from .bridge_client import bridge_client
-from .connection_registry import connection_registry, ExtensionSession
 from .ws_server import run_ws_server
-from .job_runner import run_dispatcher
-from . import admin_store
-from .text_utils import normalize_browser_text
-
-class CreateFolderBody(BaseModel):
-    name: str
-
-class DeleteMediaBody(BaseModel):
-    path: str
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("fbem.bridge")
@@ -51,19 +63,15 @@ if WS_HOST not in ("127.0.0.1", "localhost", "::1"):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     ws_task = asyncio.create_task(run_ws_server(), name="ext-ws-server")
-    job_task = asyncio.create_task(run_dispatcher(), name="job-dispatcher")
+    telegram_bot.start_bot_task()
     logger.info("fb-bridge started (ws:9224 + http:47102). Waiting for the Chrome extension…")
     try:
         yield
     finally:
+        telegram_bot.stop_bot_task()
         ws_task.cancel()
-        job_task.cancel()
         try:
             await ws_task
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001
-            pass
-        try:
-            await job_task
         except (asyncio.CancelledError, Exception):  # noqa: BLE001
             pass
         logger.info("fb-bridge stopped")
@@ -82,228 +90,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_STATIC_DIR = Path(__file__).with_name("static")
+_STATIC_DIR = Path(__file__).parent / "static"
+_STATIC_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/ui", StaticFiles(directory=_STATIC_DIR, html=True), name="dashboard")
 
 
 @app.get("/", include_in_schema=False)
-def dashboard() -> RedirectResponse:
+def root_redirect():
     return RedirectResponse("/ui/")
-
-
-def _session(extension_id: Optional[str] = None) -> ExtensionSession:
-    session = connection_registry.get(extension_id) if extension_id else connection_registry.default()
-    if session is None:
-        detail = "extension_not_connected" if not connection_registry.list() else "extension_id_required"
-        raise HTTPException(status_code=503 if not connection_registry.list() else 409, detail=detail)
-    return session
-
-
-@app.get("/api/extensions")
-def list_extensions() -> dict:
-    return {"items": connection_registry.list()}
-
-
-class AccountBody(BaseModel):
-    name: str
-    facebookId: str | None = None
-    facebook_id: str | None = None
-    extensionId: str | None = None
-    extension_id: str | None = None
-    accountType: str | None = "page"  # 'profile' | 'page'
-    account_type: str | None = None
-    parentId: str | None = None
-    parent_id: str | None = None
-    notes: str = ""
-    assignedFolder: str | None = None
-    assigned_folder: str | None = None
-    defaultScriptId: str | None = None
-    default_script_id: str | None = None
-    enabled: bool = True
-
-    @property
-    def clean_facebook_id(self) -> str:
-        return (self.facebookId or self.facebook_id or "").strip()
-
-    @property
-    def clean_extension_id(self) -> str:
-        return (self.extensionId or self.extension_id or "").strip()
-
-
-class ScriptBody(BaseModel):
-    name: str
-    description: str = ""
-    kind: str
-    config: dict = Field(default_factory=dict)
-    enabled: bool = True
-
-
-class JobBody(BaseModel):
-    accountId: str
-    kind: str | None = None
-    input: dict = Field(default_factory=dict)
-    scriptId: str | None = None
-    idempotencyKey: str | None = None
-
-
-class BulkJobBody(BaseModel):
-    accountIds: list[str]
-    kind: str | None = None
-    input: dict = Field(default_factory=dict)
-    scriptId: str | None = None
-
-
-@app.get("/api/accounts")
-def list_accounts() -> dict:
-    online = {item["id"]: item for item in connection_registry.list()}
-    items = admin_store.list_rows("accounts")
-    for item in items:
-        item["extension"] = online.get(item["extension_id"])
-    return {"items": items}
-
-
-@app.post("/api/accounts")
-def create_account(body: AccountBody) -> dict:
-    if not body.name.strip() or not body.clean_facebook_id or not body.clean_extension_id:
-        raise HTTPException(status_code=400, detail="name, facebookId and extensionId are required")
-    return admin_store.save_account(body.model_dump())
-
-
-@app.put("/api/accounts/{account_id}")
-def update_account(account_id: str, body: AccountBody) -> dict:
-    if not admin_store.get_row("accounts", account_id):
-        raise HTTPException(status_code=404, detail="account_not_found")
-    return admin_store.save_account(body.model_dump(), account_id)
-
-
-@app.delete("/api/accounts/{account_id}")
-def delete_account(account_id: str) -> dict:
-    deleted, error = admin_store.delete_account(account_id)
-    if not deleted:
-        raise HTTPException(status_code=409 if error == "account_has_active_jobs" else 404, detail=error)
-    return {"ok": True}
-
-
-@app.get("/api/scripts")
-def list_scripts() -> dict:
-    return {"items": admin_store.list_rows("scripts")}
-
-
-@app.post("/api/scripts")
-def create_script(body: ScriptBody) -> dict:
-    if body.kind not in {"post_reel", "post_photos", "switch_profile"}:
-        raise HTTPException(status_code=400, detail="invalid_script_kind")
-    return admin_store.save_script(body.model_dump())
-
-
-@app.put("/api/scripts/{script_id}")
-def update_script(script_id: str, body: ScriptBody) -> dict:
-    if not admin_store.get_row("scripts", script_id):
-        raise HTTPException(status_code=404, detail="script_not_found")
-    return admin_store.save_script(body.model_dump(), script_id)
-
-
-@app.delete("/api/scripts/{script_id}")
-def delete_script(script_id: str) -> dict:
-    if not admin_store.delete_script(script_id):
-        raise HTTPException(status_code=404, detail="script_not_found")
-    return {"ok": True}
-
-
-@app.get("/api/jobs")
-def list_jobs() -> dict:
-    return {"items": admin_store.list_rows("jobs")}
-
-
-@app.get("/api/jobs/{job_id}")
-def get_job(job_id: str) -> dict:
-    job = admin_store.get_row("jobs", job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="job_not_found")
-    return job
-
-
-@app.post("/api/jobs")
-def create_job(body: JobBody) -> dict:
-    account = admin_store.get_row("accounts", body.accountId)
-    if not account:
-        raise HTTPException(status_code=404, detail="account_not_found")
-    payload = dict(body.input)
-    kind = body.kind
-    if body.scriptId:
-        script = admin_store.get_row("scripts", body.scriptId)
-        if not script or not script.get("enabled"):
-            raise HTTPException(status_code=404, detail="script_not_found_or_disabled")
-        kind = script["kind"]
-        payload = {**(script.get("config") or {}), **payload}
-    if kind not in {"post_reel", "post_photos", "switch_profile", "get_identity"}:
-        raise HTTPException(status_code=400, detail="invalid_job_kind")
-    return admin_store.create_job(account, kind, payload, script_id=body.scriptId,
-                                  idempotency_key=body.idempotencyKey)
-
-
-@app.post("/api/jobs/bulk")
-def create_bulk_jobs(body: BulkJobBody) -> dict:
-    if not body.accountIds:
-        raise HTTPException(status_code=400, detail="accountIds_required")
-    script = admin_store.get_row("scripts", body.scriptId) if body.scriptId else None
-    if body.scriptId and (not script or not script.get("enabled")):
-        raise HTTPException(status_code=404, detail="script_not_found_or_disabled")
-    kind = script["kind"] if script else body.kind
-    if kind not in {"post_reel", "post_photos", "switch_profile", "get_identity"}:
-        raise HTTPException(status_code=400, detail="invalid_job_kind")
-    payload = {**((script or {}).get("config") or {}), **body.input}
-    jobs, errors = [], []
-    for account_id in dict.fromkeys(body.accountIds):
-        account = admin_store.get_row("accounts", account_id)
-        if not account or not account.get("enabled"):
-            errors.append({"accountId": account_id, "error": "account_not_found_or_disabled"})
-            continue
-        jobs.append(admin_store.create_job(account, kind, payload, script_id=body.scriptId))
-    return {"items": jobs, "errors": errors}
-
-
-@app.post("/api/jobs/{job_id}/cancel")
-def cancel_job(job_id: str) -> dict:
-    if not admin_store.cancel_job(job_id):
-        raise HTTPException(status_code=409, detail="job_cannot_be_cancelled")
-    return {"ok": True}
-
-
-@app.post("/api/jobs/{job_id}/retry")
-def retry_job(job_id: str) -> dict:
-    if not admin_store.retry_job(job_id):
-        raise HTTPException(status_code=409, detail="job_cannot_be_retried")
-    return admin_store.get_row("jobs", job_id) or {"ok": True}
-
-
-@app.get("/api/dashboard")
-def dashboard_summary() -> dict:
-    return {**admin_store.dashboard_stats(), "extensions": len(connection_registry.list())}
-
-
-@app.get("/api/extensions/{extension_id}/template-status")
-def extension_template_status(extension_id: str) -> dict:
-    template = capture_store.load_template(extension_id) or {}
-    stats = capture_store.capture_stats(extension_id)
-    return {
-        "extensionId": extension_id,
-        "reel": capture_store.template_complete(template),
-        "photo": capture_store.photo_template_complete(template),
-        "switchProfile": bool((template.get("graphql_ops") or {}).get("CometProfileSwitchMutation")),
-        "updatedAt": template.get("updatedAt"),
-        "capture": stats,
-    }
-
-
-@app.get("/api/extensions/{extension_id}/identity")
-async def extension_identity(extension_id: str) -> dict:
-    session = _session(extension_id)
-    response = await session.send("get_identity", {}, timeout=15.0)
-    if response.get("error"):
-        raise HTTPException(status_code=502, detail=str(response["error"])[:300])
-    data = normalize_browser_text(response.get("data") or {})
-    return {"id": data.get("identityId"), "name": data.get("identityName")}
 
 
 class PostReelBody(BaseModel):
@@ -311,7 +105,12 @@ class PostReelBody(BaseModel):
     caption: str
     pageId: Optional[str] = None
     scheduledPublishTime: int | None = None
-    extensionId: str | None = None
+    extensionId: Optional[str] = None
+    extension_id: Optional[str] = None
+
+    @property
+    def clean_extension_id(self) -> Optional[str]:
+        return self.extensionId or self.extension_id
 
     @field_validator("scheduledPublishTime")
     @classmethod
@@ -331,7 +130,12 @@ class PostPhotosBody(BaseModel):
     caption: str
     pageId: Optional[str] = None
     scheduledPublishTime: int | None = None
-    extensionId: str | None = None
+    extensionId: Optional[str] = None
+    extension_id: Optional[str] = None
+
+    @property
+    def clean_extension_id(self) -> Optional[str]:
+        return self.extensionId or self.extension_id
 
     @field_validator("scheduledPublishTime")
     @classmethod
@@ -345,13 +149,37 @@ class PostPhotosBody(BaseModel):
         return v
 
 
-class ScanPagesBody(BaseModel):
-    extensionId: str | None = None
-
-
 class SwitchProfileBody(BaseModel):
     targetId: str
-    extensionId: str | None = None
+    extensionId: Optional[str] = None
+    extension_id: Optional[str] = None
+
+    @property
+    def clean_extension_id(self) -> Optional[str]:
+        return self.extensionId or self.extension_id
+
+
+class SavePageBody(BaseModel):
+    id: str
+    name: str
+    extensionId: Optional[str] = None
+    note: Optional[str] = ""
+
+
+class StageLocalPathBody(BaseModel):
+    localPath: str
+
+
+class TelegramConfigBody(BaseModel):
+    token: str
+    chatId: str
+    enabled: bool = True
+    autoPost: bool = True
+
+
+class TelegramTestBody(BaseModel):
+    token: str
+    chatId: str
 
 
 # How long a tab stays "fresh" before it should be reloaded. The extension
@@ -374,26 +202,35 @@ def _ttl_block(last_active_at: Optional[float]) -> dict:
     }
 
 
+@app.get("/api/extensions")
+def list_extensions() -> dict:
+    """List all currently connected Chrome extensions."""
+    return {"items": bridge_client.list_extensions()}
+
+
 @app.get("/api/health")
-def health() -> dict:
-    default_session = connection_registry.default()
-    scope = default_session.extension_id if default_session else None
+def health(extension_id: Optional[str] = None) -> dict:
+    session = bridge_client.get_session(extension_id)
+    scope = session.extension_id if session else extension_id
     tpl = capture_store.load_template(scope)
     capture = capture_store.capture_stats(scope)
-    extension_items = connection_registry.list()
-    actives = [item["lastActiveAt"] for item in extension_items]
-    if capture["last_capture_at"]:
-        actives.append(capture["last_capture_at"])
+    # Anchor freshness to the most recent of: explicit reload/connect, or a real
+    # captured request (any tab activity keeps it fresh).
+    last_act = session.last_active_at if session else bridge_client.last_active_at
+    actives = [t for t in (last_act, capture["last_capture_at"]) if t]
     ttl = _ttl_block(max(actives) if actives else None)
     return {
         "ok": True,
-        "extension_connected": bool(extension_items),
-        "extension_count": len(extension_items),
-        "extensions": extension_items,
-        "fb_user": default_session.fb_user if default_session else None,
+        "extension_connected": bridge_client.connected,
+        "extension_count": bridge_client.extension_count,
+        "extensions": bridge_client.list_extensions(),
+        "fb_user": session.fb_user if session else bridge_client.fb_user,
+        # Proof the extension is live on a logged-in FB tab: it streams captured
+        # requests as soon as the tab (re)loads. tab_active flips true on reload.
         "tab_active": capture["tab_active"],
         "last_capture_at": capture["last_capture_at"],
         "captures": capture["captures"],
+        # Tab TTL (auto-reload freshness window).
         "last_active_at": ttl["last_active_at"],
         "ttl_s": ttl["ttl_s"],
         "ttl_remaining_s": ttl["ttl_remaining_s"],
@@ -401,67 +238,8 @@ def health() -> dict:
         "has_template": capture_store.template_complete(tpl),
         "has_photo_template": capture_store.photo_template_complete(tpl),
         "capture": capture,
-        "ws_stats": {"connected": len(extension_items), "pending": sum(x["pending"] for x in extension_items)},
+        "ws_stats": bridge_client.ws_stats,
     }
-
-
-def _safe_resolve_media(rel_name: str) -> Path | None:
-    """Safely resolve a relative media path within _VIDEO_DIR or workspace media/."""
-    if not rel_name:
-        return None
-    clean = rel_name.strip().replace("\\", "/").lstrip("/")
-    base_v = _VIDEO_DIR.resolve()
-    try:
-        p1 = (base_v / clean).resolve()
-        if str(p1).startswith(str(base_v)) and p1.is_file():
-            return p1
-    except Exception:
-        pass
-
-    base_w = Path("media").resolve()
-    if base_w.is_dir():
-        try:
-            p2 = (base_w / clean).resolve()
-            if str(p2).startswith(str(base_w)) and p2.is_file():
-                return p2
-        except Exception:
-            pass
-    return None
-
-
-def cleanup_media_file(url_or_path: str, job_id: str | None = None) -> bool:
-    """Delete a media file from media dirs once scheduled or posted successfully.
-    Skips deletion if other queued/running jobs still need this media file.
-    """
-    try:
-        from urllib.parse import urlparse, parse_qs
-        filename = None
-        if "name=" in url_or_path:
-            qs = parse_qs(urlparse(url_or_path).query)
-            filename = qs.get("name", [None])[0]
-        if not filename:
-            filename = url_or_path.replace("http://127.0.0.1:47102/local-video?name=", "").replace("http://127.0.0.1:47102/local-image?name=", "")
-
-        # Check if other active jobs still need this media file
-        remaining_jobs = admin_store.count_active_jobs_with_media(filename or url_or_path, exclude_job_id=job_id)
-        if remaining_jobs > 0:
-            logger.info("Media file %s still needed by %d active jobs; preserving for now.", filename or url_or_path, remaining_jobs)
-            return False
-
-        p = _safe_resolve_media(filename)
-        if p and p.is_file():
-            p.unlink(missing_ok=True)
-            logger.info("Successfully deleted posted media file: %s (avoid duplicates)", p)
-            return True
-
-        p3 = Path(url_or_path).expanduser().resolve()
-        if p3.is_file():
-            p3.unlink(missing_ok=True)
-            logger.info("Successfully deleted source media file: %s (avoid duplicates)", p3)
-            return True
-    except Exception as e:
-        logger.warning("Error cleaning up media file %s: %s", url_or_path, e)
-    return False
 
 
 @app.post("/post-reel")
@@ -474,7 +252,8 @@ async def post_reel(body: PostReelBody) -> dict:
     if not body.videoUrl.strip():
         raise HTTPException(status_code=400, detail="empty_videoUrl")
 
-    template = capture_store.load_template()
+    ext_id = body.clean_extension_id
+    template = capture_store.load_template(ext_id)
     if not capture_store.template_complete(template):
         raise HTTPException(
             status_code=502,
@@ -482,29 +261,44 @@ async def post_reel(body: PostReelBody) -> dict:
             "crawler (need BOTH the rupload video-upload and the publish mutation)",
         )
 
+    job = history_store.add_job("post_reel", body.model_dump(), extension_id=ext_id, page_id=body.pageId, caption=body.caption)
     switch_tpl = (template.get("graphql_ops") or {}).get("CometProfileSwitchMutation") if body.pageId else None
-    resp = await bridge_client.post_reel(
-        video_url=body.videoUrl.strip(),
-        caption=body.caption,
-        page_id=body.pageId,
-        template=template,
-        scheduled_publish_time=body.scheduledPublishTime,
-        switch_template=switch_tpl,
-    )
-    if resp.get("error"):
-        raise HTTPException(status_code=502, detail=str(resp["error"])[:300])
 
-    data = resp.get("data") or {}
-    if not isinstance(data, dict):
-        raise HTTPException(status_code=502, detail="invalid_response_data")
+    try:
+        resp = await bridge_client.post_reel(
+            video_url=body.videoUrl.strip(),
+            caption=body.caption,
+            page_id=body.pageId,
+            template=template,
+            scheduled_publish_time=body.scheduledPublishTime,
+            switch_template=switch_tpl,
+            extension_id=ext_id,
+        )
+        if resp.get("error"):
+            history_store.update_job(job["id"], "failed", error=resp["error"])
+            raise HTTPException(status_code=502, detail=str(resp["error"])[:300])
 
-    cleanup_media_file(body.videoUrl.strip())
+        data = resp.get("data") or {}
+        if not isinstance(data, dict):
+            history_store.update_job(job["id"], "failed", error="invalid_response_data")
+            raise HTTPException(status_code=502, detail="invalid_response_data")
 
-    return {
-        "ok": True,
-        "videoId": data.get("videoId"),
-        "permalinkUrl": data.get("permalinkUrl"),
-    }
+        res = {
+            "ok": True,
+            "videoId": data.get("videoId"),
+            "permalinkUrl": data.get("permalinkUrl"),
+        }
+        history_store.update_job(job["id"], "succeeded", result=res)
+        asyncio.create_task(
+            telegram_bot.send_notification(
+                f"🎉 <b>Xuất bản Reel Thành Công!</b>\n🆔 ID: <code>{res['videoId']}</code>\n📝 Caption: <i>{body.caption[:60]}...</i>",
+                permalink=res.get("permalinkUrl"),
+            )
+        )
+        return res
+    except Exception as e:
+        history_store.update_job(job["id"], "failed", error=str(e))
+        raise
 
 
 @app.post("/post-photos")
@@ -518,7 +312,8 @@ async def post_photos(body: PostPhotosBody) -> dict:
     if not urls:
         raise HTTPException(status_code=400, detail="empty_imageUrls")
 
-    template = capture_store.load_template()
+    ext_id = body.clean_extension_id
+    template = capture_store.load_template(ext_id)
     if not capture_store.photo_template_complete(template):
         raise HTTPException(
             status_code=502,
@@ -526,31 +321,197 @@ async def post_photos(body: PostPhotosBody) -> dict:
             "facebook.com to seed the crawler (need the ComposerStoryCreateMutation with photo attachments)",
         )
 
+    job = history_store.add_job("post_photos", body.model_dump(), extension_id=ext_id, page_id=body.pageId, caption=body.caption)
     switch_tpl = (template.get("graphql_ops") or {}).get("CometProfileSwitchMutation") if body.pageId else None
-    resp = await bridge_client.post_photos(
-        image_urls=urls,
-        caption=body.caption,
-        page_id=body.pageId,
-        template=template,
-        scheduled_publish_time=body.scheduledPublishTime,
-        switch_template=switch_tpl,
-    )
-    if resp.get("error"):
-        raise HTTPException(status_code=502, detail=str(resp["error"])[:300])
 
-    data = resp.get("data") or {}
-    if not isinstance(data, dict):
-        raise HTTPException(status_code=502, detail="invalid_response_data")
+    try:
+        resp = await bridge_client.post_photos(
+            image_urls=urls,
+            caption=body.caption,
+            page_id=body.pageId,
+            template=template,
+            scheduled_publish_time=body.scheduledPublishTime,
+            switch_template=switch_tpl,
+            extension_id=ext_id,
+        )
+        if resp.get("error"):
+            history_store.update_job(job["id"], "failed", error=resp["error"])
+            raise HTTPException(status_code=502, detail=str(resp["error"])[:300])
 
-    for u in urls:
-        cleanup_media_file(u)
+        data = resp.get("data") or {}
+        if not isinstance(data, dict):
+            history_store.update_job(job["id"], "failed", error="invalid_response_data")
+            raise HTTPException(status_code=502, detail="invalid_response_data")
+
+        res = {
+            "ok": True,
+            "postId": data.get("postId"),
+            "photoIds": data.get("photoIds"),
+            "permalinkUrl": data.get("permalinkUrl"),
+        }
+        history_store.update_job(job["id"], "succeeded", result=res)
+        asyncio.create_task(
+            telegram_bot.send_notification(
+                f"🎉 <b>Đăng Ảnh Thành Công!</b>\n🆔 Post ID: <code>{res['postId']}</code>\n📝 Caption: <i>{body.caption[:60]}...</i>",
+                permalink=res.get("permalinkUrl"),
+            )
+        )
+        return res
+    except Exception as e:
+        history_store.update_job(job["id"], "failed", error=str(e))
+        raise
+
+
+@app.post("/api/upload-media")
+async def upload_media(file: UploadFile = File(...)) -> dict:
+    """Upload a media file (mp4, jpg, png) directly from UI/API into media dir."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="no_filename")
+
+    clean_name = Path(file.filename).name
+    ext = Path(clean_name).suffix.lower()
+    if ext not in (".mp4", ".mov", ".jpg", ".jpeg", ".png"):
+        raise HTTPException(status_code=400, detail=f"unsupported_format_{ext}")
+
+    out_dir = media_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    dest = out_dir / clean_name
+    idx = 0
+    while dest.exists():
+        idx += 1
+        dest = out_dir / f"{Path(clean_name).stem}_{idx}{ext}"
+
+    with dest.open("wb") as buffer:
+        while chunk := await file.read(1024 * 1024):
+            buffer.write(chunk)
+
+    is_video = ext in (".mp4", ".mov")
+    route = "local-video" if is_video else "local-image"
+    url = f"http://127.0.0.1:{HTTP_PORT}/{route}?name={quote(dest.name)}"
 
     return {
         "ok": True,
-        "postId": data.get("postId"),
-        "photoIds": data.get("photoIds"),
-        "permalinkUrl": data.get("permalinkUrl"),
+        "filename": dest.name,
+        "mediaType": "video" if is_video else "image",
+        "url": url,
+        "sizeBytes": dest.stat().st_size,
     }
+
+
+@app.get("/api/history")
+def get_history(limit: int = 50) -> dict:
+    """List recent posting jobs and statuses."""
+    return {"items": history_store.list_jobs(limit)}
+
+
+@app.get("/api/jobs")
+def get_jobs(limit: int = 50) -> dict:
+    """Alias for /api/history."""
+    return {"items": history_store.list_jobs(limit)}
+
+
+@app.get("/api/accounts")
+def get_accounts() -> dict:
+    """Alias for /api/extensions."""
+    return {"items": bridge_client.list_extensions()}
+
+
+@app.get("/api/scripts")
+def get_scripts() -> dict:
+    return {"items": []}
+
+
+@app.delete("/api/history")
+def clear_history() -> dict:
+    """Clear posting history."""
+    history_store.clear_jobs()
+    return {"ok": True}
+
+
+@app.get("/api/pages")
+def list_pages() -> dict:
+    """List saved Fanpages."""
+    return {"items": pages_store.list_pages()}
+
+
+@app.post("/api/pages")
+def save_page(body: SavePageBody) -> dict:
+    """Save or update a Fanpage in the persistent store."""
+    page = pages_store.save_page(
+        page_id=body.id,
+        name=body.name,
+        extension_id=body.extensionId,
+        note=body.note or "",
+    )
+    return {"ok": True, "page": page}
+
+
+@app.delete("/api/pages/{page_id}")
+def delete_page(page_id: str) -> dict:
+    """Remove a saved Fanpage."""
+    pages_store.delete_page(page_id)
+    return {"ok": True}
+
+
+@app.post("/api/stage-local-path")
+def stage_local_path(body: StageLocalPathBody) -> dict:
+    """Stage a local file directly from computer path into media dir."""
+    raw = body.localPath.strip().strip('"').strip("'")
+    p = Path(raw).expanduser().resolve()
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail=f"file_not_found: {p}")
+
+    ext = p.suffix.lower()
+    if ext not in (".mp4", ".mov", ".jpg", ".jpeg", ".png"):
+        raise HTTPException(status_code=400, detail=f"unsupported_format_{ext}")
+
+    out_dir = media_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    dest = out_dir / p.name
+    if p != dest:
+        shutil.copy2(p, dest)
+
+    is_video = ext in (".mp4", ".mov")
+    route = "local-video" if is_video else "local-image"
+    url = f"http://127.0.0.1:{HTTP_PORT}/{route}?name={quote(dest.name)}"
+
+    return {
+        "ok": True,
+        "filename": dest.name,
+        "mediaType": "video" if is_video else "image",
+        "url": url,
+        "sizeBytes": dest.stat().st_size,
+    }
+
+
+@app.get("/api/telegram/config")
+def get_telegram_config() -> dict:
+    """Get current Telegram bot settings."""
+    return telegram_bot.get_config()
+
+
+@app.post("/api/telegram/config")
+def set_telegram_config(body: TelegramConfigBody) -> dict:
+    """Save Telegram bot settings and start/restart polling."""
+    cfg = telegram_bot.save_config(
+        token=body.token,
+        chat_id=body.chatId,
+        enabled=body.enabled,
+        auto_post=body.autoPost,
+    )
+    if body.enabled and body.token:
+        telegram_bot.start_bot_task()
+    else:
+        telegram_bot.stop_bot_task()
+    return {"ok": True, "config": cfg}
+
+
+@app.post("/api/telegram/test")
+async def test_telegram(body: TelegramTestBody) -> dict:
+    """Send a test message to Telegram."""
+    return await telegram_bot.test_connection(token=body.token, chat_id=body.chatId)
 
 
 @app.post("/switch-profile")
@@ -561,9 +522,12 @@ async def switch_profile(body: SwitchProfileBody) -> dict:
         raise HTTPException(status_code=503, detail="extension_not_connected — load the Chrome extension")
     if not body.targetId.strip():
         raise HTTPException(status_code=400, detail="empty_targetId")
-    template = capture_store.load_template() or {}
+    # The switch needs a captured CometProfileSwitchMutation (full fingerprints);
+    # a hand-built body is rejected (profile_switcher_comet_login=null).
+    ext_id = body.clean_extension_id
+    template = capture_store.load_template(ext_id) or {}
     switch_tpl = (template.get("graphql_ops") or {}).get("CometProfileSwitchMutation")
-    resp = await bridge_client.switch_profile(body.targetId.strip(), switch_tpl)
+    resp = await bridge_client.switch_profile(body.targetId.strip(), switch_tpl, extension_id=ext_id)
     if resp.get("error"):
         raise HTTPException(status_code=502, detail=str(resp["error"])[:300])
     data = resp.get("data") or {}
@@ -575,58 +539,28 @@ async def switch_profile(body: SwitchProfileBody) -> dict:
 
 
 @app.get("/api/current-identity")
-async def current_identity() -> dict:
+async def current_identity(extension_id: Optional[str] = None) -> dict:
     """The page/profile the FB tab currently posts AS (read-only — no switch).
-    Used to pre-fill the dashboard 'add page' form. 503 if the extension isn't
-    connected; 502 if the page couldn't read its identity."""
+    Used to pre-fill the dashboard 'add page' form."""
     if not bridge_client.connected:
         raise HTTPException(status_code=503, detail="extension_not_connected — load the Chrome extension")
-    resp = await bridge_client.get_identity()
+    session = bridge_client.get_session(extension_id)
+    resp = await bridge_client.get_identity(extension_id=extension_id)
     if resp.get("error"):
-        raise HTTPException(status_code=502, detail=str(resp["error"])[:300])
+        if session and session.fb_user:
+            return session.fb_user
+        return {"id": None, "name": None}
     data = resp.get("data") or {}
-    return normalize_browser_text({"id": data.get("identityId"), "name": data.get("identityName")})
-
-
-@app.post("/api/scan-pages")
-async def scan_pages(body: ScanPagesBody) -> dict:
-    """Scan all managed Fanpages from the connected Facebook tab and auto-register them."""
-    extension_id = body.extensionId
-    session = connection_registry.get(extension_id) if extension_id else connection_registry.default()
-    if not session:
-        raise HTTPException(status_code=503, detail="extension_not_connected")
-
-    resp = await session.send("scan_pages", {}, timeout=30.0)
-    if resp.get("error"):
-        raise HTTPException(status_code=502, detail=str(resp["error"]))
-
-    data = resp.get("data") or {}
-    pages = data.get("pages") or []
-
-    # Auto-save discovered pages to database
-    saved_count = 0
-    for p in pages:
-        p_id = str(p.get("id", "")).strip()
-        p_name = str(p.get("name", "")).strip()
-        if p_id and p_name:
-            existing = [a for a in admin_store.list_rows("accounts") if a.get("facebook_id") == p_id]
-            if not existing:
-                admin_store.save_account({
-                    "name": p_name,
-                    "facebookId": p_id,
-                    "extensionId": session.extension_id,
-                    "accountType": "page",
-                    "notes": "Tự động quét từ FB",
-                    "enabled": True,
-                })
-                saved_count += 1
-
-    return {
-        "ok": True,
-        "totalFound": len(pages),
-        "savedNew": saved_count,
-        "pages": pages,
-    }
+    p_id = data.get("identityId")
+    p_name = data.get("identityName")
+    if p_id:
+        ext_id = session.extension_id if session else extension_id
+        effective_name = p_name or f"Fanpage {p_id}"
+        pages_store.save_page(p_id, effective_name, extension_id=ext_id)
+        if session:
+            session.fb_user = {"id": p_id, "name": effective_name}
+        return {"id": p_id, "name": effective_name}
+    return {"id": p_id, "name": p_name}
 
 
 @app.post("/api/ext/callback")
@@ -636,10 +570,9 @@ async def ext_callback(
     x_extension_id: str | None = Header(default=None, alias="X-Extension-Id"),
 ) -> dict:
     """The extension POSTs its responses here, secret-gated."""
-    session = connection_registry.get(x_extension_id or "") or (
-        connection_registry.by_secret(x_callback_secret or "") if x_callback_secret else None
-    )
-    if not session or not x_callback_secret or not hmac.compare_digest(x_callback_secret, session.callback_secret):
+    if not x_callback_secret or not hmac.compare_digest(
+        x_callback_secret, bridge_client.callback_secret
+    ):
         raise HTTPException(status_code=401, detail="invalid callback secret")
     try:
         payload = await body.json()
@@ -647,10 +580,9 @@ async def ext_callback(
         raise HTTPException(status_code=400, detail="invalid json body")
     if not isinstance(payload, dict) or "id" not in payload:
         raise HTTPException(status_code=400, detail="missing id")
-    resolved = session.resolve(payload)
-    if not resolved:
-        resolved = bridge_client.resolve_callback(payload)
-    return {"ok": resolved}
+    if x_extension_id and "extensionId" not in payload:
+        payload["extensionId"] = x_extension_id
+    return {"ok": bridge_client.resolve_callback(payload)}
 
 
 @app.post("/api/ext/capture")
@@ -660,10 +592,9 @@ async def ext_capture(
     x_extension_id: str | None = Header(default=None, alias="X-Extension-Id"),
 ) -> dict:
     """The crawler POSTs recorded native upload requests here, secret-gated."""
-    session = connection_registry.get(x_extension_id or "") or (
-        connection_registry.by_secret(x_callback_secret or "") if x_callback_secret else None
-    )
-    if not session or not x_callback_secret or not hmac.compare_digest(x_callback_secret, session.callback_secret):
+    if not x_callback_secret or not hmac.compare_digest(
+        x_callback_secret, bridge_client.callback_secret
+    ):
         raise HTTPException(status_code=401, detail="invalid callback secret")
     try:
         payload = await body.json()
@@ -671,9 +602,8 @@ async def ext_capture(
         raise HTTPException(status_code=400, detail="invalid json body")
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="capture body must be an object")
-    await asyncio.to_thread(capture_store.save_capture, payload, session.extension_id)
-    if len(connection_registry.list()) == 1:
-        await asyncio.to_thread(capture_store.save_capture, payload)
+    ext_id = x_extension_id or payload.get("extensionId")
+    await asyncio.to_thread(capture_store.save_capture, payload, extension_id=ext_id)
     return {"ok": True}
 
 
@@ -686,23 +616,24 @@ _IMAGE_DIR = media_dir()
 
 @app.get("/local-video")
 def local_video(name: str) -> FileResponse:
-    """Serve a locally-rendered video to the extension or frontend preview over loopback.
-    Supports files in root media_dir or subfolders."""
-    p = _safe_resolve_media(name)
-    if not p or p.suffix.lower() not in {".mp4", ".mov", ".mkv", ".webm"}:
+    """Serve a locally-rendered mp4 to the extension over loopback, so the
+    page-context fetch avoids cross-origin CORS. Basename-only (no traversal);
+    .mp4 only; restricted to the FBEM media dir."""
+    p = _VIDEO_DIR / Path(name).name
+    if p.suffix.lower() != ".mp4" or not p.is_file():
         raise HTTPException(status_code=404, detail="not_found")
     return FileResponse(str(p), media_type="video/mp4")
 
 
-_IMAGE_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
+_IMAGE_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}
 
 
 @app.get("/local-image")
 def local_image(name: str) -> FileResponse:
-    """Serve a locally-rendered image to the extension or frontend over loopback."""
-    p = _safe_resolve_media(name)
-    if not p:
-        raise HTTPException(status_code=404, detail="not_found")
+    """Serve a locally-rendered image to the extension over loopback, so the
+    page-context fetch avoids cross-origin CORS. Basename-only (no traversal);
+    jpg/png only; restricted to the FBEM media dir."""
+    p = _IMAGE_DIR / Path(name).name
     media = _IMAGE_TYPES.get(p.suffix.lower())
     if not media or not p.is_file():
         raise HTTPException(status_code=404, detail="not_found")
@@ -710,160 +641,14 @@ def local_image(name: str) -> FileResponse:
 
 
 @app.get("/api/template")
-def get_template(extensionId: str | None = None) -> dict:
+def get_template(extension_id: Optional[str] = None) -> dict:
     """Return the current captured template (debug). Empty object if none yet."""
-    scope = extensionId
-    if not scope:
-        default = connection_registry.default()
-        scope = default.extension_id if default else None
-    return capture_store.load_template(scope) or {}
+    return capture_store.load_template(extension_id) or {}
 
 
-@app.get("/api/media")
-def list_media() -> dict:
-    """List all folders and media files (videos, images) recursively."""
-    base_dir = _VIDEO_DIR.resolve()
-    base_dir.mkdir(parents=True, exist_ok=True)
-    
-    folders_map: dict[str, dict] = {}
-    items = []
-    seen = set()
-
-    def scan_dir(d: Path, rel_prefix: str = ""):
-        if not d.is_dir():
-            return
-        for entry in d.iterdir():
-            try:
-                if entry.is_dir() and not entry.name.startswith("."):
-                    sub_rel = f"{rel_prefix}/{entry.name}".strip("/")
-                    if sub_rel not in folders_map:
-                        folders_map[sub_rel] = {
-                            "name": entry.name,
-                            "path": sub_rel,
-                            "count": 0,
-                            "size": 0,
-                        }
-                    scan_dir(entry, sub_rel)
-                elif entry.is_file() and not entry.name.startswith("."):
-                    ext = entry.suffix.lower()
-                    if ext in {".mp4", ".mov", ".mkv", ".webm", ".jpg", ".jpeg", ".png", ".webp"}:
-                        rel_path = f"{rel_prefix}/{entry.name}".strip("/")
-                        if rel_path in seen:
-                            continue
-                        seen.add(rel_path)
-                        st = entry.stat()
-                        size = st.st_size
-                        mtime = int(st.st_mtime)
-                        folder_name = rel_prefix if rel_prefix else "Gốc (Chưa phân loại)"
-                        kind = "video" if ext in {".mp4", ".mov", ".mkv", ".webm"} else "photo"
-                        url = f"http://127.0.0.1:47102/{'local-video' if kind == 'video' else 'local-image'}?name={rel_path}"
-                        
-                        if rel_prefix and rel_prefix in folders_map:
-                            folders_map[rel_prefix]["count"] += 1
-                            folders_map[rel_prefix]["size"] += size
-
-                        items.append({
-                            "name": entry.name,
-                            "folder": folder_name,
-                            "folderPath": rel_prefix,
-                            "relPath": rel_path,
-                            "url": url,
-                            "size": size,
-                            "kind": kind,
-                            "modifiedAt": mtime,
-                        })
-            except Exception as ex:
-                logger.warning("Error scanning entry %s: %s", entry, ex)
-
-    scan_dir(base_dir)
-    # Also check workspace media/ if distinct
-    ws_media = Path("media").resolve()
-    if ws_media != base_dir and ws_media.is_dir():
-        scan_dir(ws_media)
-
-    folders_list = sorted(list(folders_map.values()), key=lambda x: x["path"])
-    sorted_items = sorted(items, key=lambda x: x.get("modifiedAt", 0), reverse=True)
-    return {
-        "ok": True,
-        "baseDir": str(base_dir),
-        "folders": folders_list,
-        "items": sorted_items,
-        "totalFiles": len(sorted_items),
-        "totalSize": sum(x["size"] for x in sorted_items),
-    }
-
-
-@app.post("/api/media/folders")
-def create_media_folder(body: CreateFolderBody) -> dict:
-    """Create a new media folder/subdirectory."""
-    folder_name = body.name.strip().strip("/\\").replace("..", "")
-    if not folder_name:
-        raise HTTPException(status_code=400, detail="folder_name_required")
-    target_dir = (_VIDEO_DIR / folder_name).resolve()
-    if not str(target_dir).startswith(str(_VIDEO_DIR.resolve())):
-        raise HTTPException(status_code=400, detail="invalid_folder_name")
-    target_dir.mkdir(parents=True, exist_ok=True)
-    return {"ok": True, "name": folder_name, "path": str(target_dir)}
-
-
-@app.delete("/api/media/folders")
-def delete_media_folder(path: str) -> dict:
-    """Delete a media folder."""
-    clean = path.strip().strip("/\\").replace("..", "")
-    if not clean:
-        raise HTTPException(status_code=400, detail="folder_path_required")
-    target_dir = (_VIDEO_DIR / clean).resolve()
-    if not str(target_dir).startswith(str(_VIDEO_DIR.resolve())) or not target_dir.is_dir():
-        raise HTTPException(status_code=404, detail="folder_not_found")
-    try:
-        shutil.rmtree(target_dir)
-        return {"ok": True}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/media/upload")
-async def upload_media_file(
-    file: UploadFile = File(...),
-    folder: str = Form(""),
-) -> dict:
-    """Upload a video or photo file directly into media library / folder."""
-    clean_folder = folder.strip().strip("/\\").replace("..", "")
-    target_dir = (_VIDEO_DIR / clean_folder).resolve() if clean_folder else _VIDEO_DIR.resolve()
-    if not str(target_dir).startswith(str(_VIDEO_DIR.resolve())):
-        raise HTTPException(status_code=400, detail="invalid_target_folder")
-    target_dir.mkdir(parents=True, exist_ok=True)
-
-    filename = Path(file.filename or "media_upload").name
-    dest_path = target_dir / filename
-    
-    with open(dest_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
-
-    rel_path = f"{clean_folder}/{filename}".strip("/")
-    ext = dest_path.suffix.lower()
-    kind = "video" if ext in {".mp4", ".mov", ".mkv", ".webm"} else "photo"
-    url = f"http://127.0.0.1:47102/{'local-video' if kind == 'video' else 'local-image'}?name={rel_path}"
-
-    return {
-        "ok": True,
-        "name": filename,
-        "folder": clean_folder,
-        "relPath": rel_path,
-        "url": url,
-        "size": dest_path.stat().st_size,
-        "kind": kind,
-    }
-
-
-@app.delete("/api/media/files")
-def delete_media_file(path: str) -> dict:
-    """Delete a single media file."""
-    p = _safe_resolve_media(path)
-    if not p or not p.is_file():
-        raise HTTPException(status_code=404, detail="file_not_found")
-    try:
-        p.unlink(missing_ok=True)
-        return {"ok": True}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+@app.post("/api/launch-profiles")
+def launch_profiles() -> dict:
+    """Launch all detected Chrome profiles in silent minimized background mode."""
+    from . import chrome_launcher
+    launched = chrome_launcher.launch_all_profiles_background()
+    return {"ok": True, "launched": launched}

@@ -12,7 +12,7 @@ from .. import bridge_api as bridge
         "connected, are the reel/photo templates captured, and tab freshness/TTL."
     ),
 )
-async def health() -> dict:
+async def health(extension_id: str | None = None) -> dict:
     """Return the bridge ``/api/health`` payload (connection, templates, capture
     activity, tab TTL)."""
-    return await bridge.health()
+    return await bridge.health(extension_id=extension_id)

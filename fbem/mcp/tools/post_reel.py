@@ -18,6 +18,7 @@ async def post_reel(
     caption: str,
     page_id: str | None = None,
     scheduled_publish_time: int | None = None,
+    extension_id: str | None = None,
 ) -> dict:
     """Upload and publish a Reel.
 
@@ -26,6 +27,13 @@ async def post_reel(
         caption: Full caption text (including hashtags).
         page_id: Optional Facebook page id to post as (bridge's current identity if omitted).
         scheduled_publish_time: Optional epoch SECONDS to schedule; omit to publish now.
+        extension_id: Optional Chrome extension / profile id to target if multiple are connected.
     Returns: ``{ ok, videoId, permalinkUrl }``.
     """
-    return await bridge.post_reel(video_path, caption, page_id, scheduled_publish_time)
+    return await bridge.post_reel(
+        video_path,
+        caption,
+        page_id=page_id,
+        scheduled_publish_time=scheduled_publish_time,
+        extension_id=extension_id,
+    )
