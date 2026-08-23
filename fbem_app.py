@@ -17,7 +17,6 @@ else:
 
 import uvicorn
 from fbem.bridge.config import HTTP_PORT
-from fbem.bridge.chrome_launcher import launch_all_profiles
 
 
 def run_uvicorn_server() -> None:
@@ -31,9 +30,10 @@ def run_uvicorn_server() -> None:
 def main() -> None:
     # 1. Launch background Chrome profiles if any
     try:
-        launch_all_profiles()
-    except Exception:
-        pass
+        from fbem.bridge.chrome_launcher import launch_all_profiles_background
+        launch_all_profiles_background()
+    except Exception as e:
+        print(f"[!] Chrome profile launcher note: {e}")
 
     # 2. Start Uvicorn server thread
     server_thread = threading.Thread(target=run_uvicorn_server, daemon=True)
