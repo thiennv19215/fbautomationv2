@@ -120,7 +120,7 @@ async def send_message(text: str, chat_id: Optional[str] = None, reply_markup: O
         payload["reply_markup"] = reply_markup
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
             resp = await client.post(url, json=payload)
             return resp.status_code == 200
     except Exception as exc:
@@ -152,7 +152,7 @@ async def test_connection(token: str, chat_id: str) -> dict:
         "parse_mode": "HTML",
     }
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
             resp = await client.post(url, json=payload)
             if resp.status_code == 200:
                 return {"ok": True, "message": "Gửi tin nhắn test thành công!"}
@@ -164,7 +164,7 @@ async def test_connection(token: str, chat_id: str) -> dict:
 
 async def _download_telegram_file(token: str, file_id: str, ext: str) -> Optional[Path]:
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
             # 1. Get file path
             info_res = await client.get(f"https://api.telegram.org/bot{token}/getFile?file_id={file_id}")
             if info_res.status_code != 200:
@@ -191,16 +191,21 @@ async def _download_telegram_file(token: str, file_id: str, ext: str) -> Optiona
 
 
 async def _download_direct_url(url: str, ext: str = ".mp4") -> Optional[Path]:
-    """Download video from a direct URL (no 20MB limit!)."""
+    """Download video/image from a direct URL (R2, S3, CDN - no 20MB limit!)."""
     try:
         out_dir = media_dir()
         out_dir.mkdir(parents=True, exist_ok=True)
         filename = f"url_{int(time.time())}_{abs(hash(url)) % 100000}{ext}"
         dest = out_dir / filename
 
-        async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+            "Accept": "*/*",
+        }
+        async with httpx.AsyncClient(timeout=300.0, follow_redirects=True, trust_env=False, headers=headers) as client:
             async with client.stream("GET", url) as response:
-                if response.status_code != 200:
+                if response.status_code not in (200, 206):
+                    logger.warning("direct url download failed status=%s for %s", response.status_code, url)
                     return None
                 with open(dest, "wb") as f:
                     async for chunk in response.aiter_bytes(chunk_size=65536):
@@ -837,7 +842,7 @@ async def _polling_loop():
                 continue
 
             url = f"https://api.telegram.org/bot{token}/getUpdates?offset={offset}&timeout=15"
-            async with httpx.AsyncClient(timeout=25.0) as client:
+            async with httpx.AsyncClient(timeout=25.0, trust_env=False) as client:
                 resp = await client.get(url)
                 if resp.status_code == 200:
                     data = resp.json()

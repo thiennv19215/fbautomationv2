@@ -37,4 +37,6 @@ export const endpoints = {
     return data;
   },
   deleteMedia: (path) => api(`/api/media/files?path=${encodeURIComponent(path)}`, { method: "DELETE" }),
+  queueSettings: () => api("/api/settings/queue"),
+  saveQueueSettings: (body) => api("/api/settings/queue", { method: "POST", body: JSON.stringify(body) }),
 };

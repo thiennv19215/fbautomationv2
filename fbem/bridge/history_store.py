@@ -90,6 +90,34 @@ def list_jobs(limit: int = 50) -> list[dict]:
     return jobs[:limit]
 
 
+def list_recent(limit: int = 50) -> list[dict]:
+    return list_jobs(limit=limit)
+
+
 def clear_jobs() -> bool:
     _save_store([])
     return True
+
+
+def clear_history() -> bool:
+    return clear_jobs()
+
+
+def fail_job(job_id: str, error: str) -> Optional[dict]:
+    return update_job(job_id, status="failed", error=error)
+
+
+def finish_job(
+    job_id: str,
+    video_id: str | None = None,
+    post_id: str | None = None,
+    permalink_url: str | None = None,
+) -> Optional[dict]:
+    res = {}
+    if video_id:
+        res["videoId"] = video_id
+    if post_id:
+        res["postId"] = post_id
+    if permalink_url:
+        res["permalinkUrl"] = permalink_url
+    return update_job(job_id, status="succeeded", result=res)

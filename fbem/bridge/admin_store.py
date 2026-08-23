@@ -64,6 +64,16 @@ def init_db() -> None:
         if "default_script_id" not in cols:
             db.execute("ALTER TABLE accounts ADD COLUMN default_script_id TEXT DEFAULT ''")
 
+        job_cols = {col[1] for col in db.execute("PRAGMA table_info(jobs)").fetchall()}
+        if "run_at" not in job_cols:
+            db.execute("ALTER TABLE jobs ADD COLUMN run_at INTEGER DEFAULT 0")
+
+        db.execute("""
+        CREATE TABLE IF NOT EXISTS system_settings (
+          key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at INTEGER NOT NULL
+        );
+        """)
+
         # Seed default script templates if empty
         script_count = db.execute("SELECT COUNT(*) FROM scripts").fetchone()[0]
         if script_count == 0:
@@ -147,6 +157,15 @@ def list_rows(table: str) -> list[dict]:
         return [_row(r) for r in db.execute(f"SELECT * FROM {table} ORDER BY {order}").fetchall()]
 
 
+def list_jobs(status: str | None = None, limit: int = 100) -> list[dict]:
+    with _connect() as db:
+        if status:
+            rows = db.execute("SELECT * FROM jobs WHERE status=? ORDER BY created_at DESC LIMIT ?", (status, limit)).fetchall()
+        else:
+            rows = db.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+        return [_row(r) for r in rows]
+
+
 def get_row(table: str, item_id: str) -> dict | None:
     if table not in {"accounts", "scripts", "jobs"}:
         raise ValueError("invalid table")
@@ -192,17 +211,45 @@ def save_script(data: dict, item_id: str | None = None) -> dict:
     return get_row("scripts", item_id) or {}
 
 
+def get_queue_settings() -> dict:
+    with _connect() as db:
+        row = db.execute("SELECT value_json FROM system_settings WHERE key='queue_settings'").fetchone()
+        if row:
+            try:
+                return json.loads(row[0])
+            except Exception:
+                pass
+    return {
+        "staggerSeconds": 30,
+        "jitterSeconds": 10,
+        "autoStagger": True,
+    }
+
+
+def save_queue_settings(settings: dict) -> dict:
+    current = get_queue_settings()
+    current.update(settings)
+    now = int(time.time())
+    with _connect() as db:
+        db.execute(
+            "INSERT OR REPLACE INTO system_settings (key, value_json, updated_at) VALUES ('queue_settings', ?, ?)",
+            (json.dumps(current, ensure_ascii=False), now),
+        )
+    return current
+
+
 def create_job(account: dict, kind: str, payload: dict, *, script_id: str | None = None,
-               idempotency_key: str | None = None) -> dict:
+               idempotency_key: str | None = None, run_at: int | None = None) -> dict:
     now = int(time.time())
     item_id = str(uuid.uuid4())
     key = idempotency_key or item_id
+    scheduled_run_at = run_at if run_at is not None else now
     with _connect() as db:
         try:
             db.execute("""INSERT INTO jobs
-              (id,account_id,extension_id,script_id,kind,input_json,status,idempotency_key,created_at)
-              VALUES(?,?,?,?,?,?,?,?,?)""", (item_id, account["id"], account["extension_id"], script_id,
-              kind, json.dumps(payload, ensure_ascii=False), "queued", key, now))
+              (id,account_id,extension_id,script_id,kind,input_json,status,idempotency_key,created_at,run_at)
+              VALUES(?,?,?,?,?,?,?,?,?,?)""", (item_id, account["id"], account["extension_id"], script_id,
+              kind, json.dumps(payload, ensure_ascii=False), "queued", key, now, scheduled_run_at))
         except sqlite3.IntegrityError:
             row = db.execute("SELECT * FROM jobs WHERE idempotency_key=?", (key,)).fetchone()
             return _row(row) or {}
@@ -210,17 +257,21 @@ def create_job(account: dict, kind: str, payload: dict, *, script_id: str | None
 
 
 def claim_next_job() -> dict | None:
-    """Atomically claim a job whose account has no running job."""
+    """Atomically claim a job whose account has no running job and whose run_at timestamp has passed."""
+    now = int(time.time())
     with _connect() as db:
         db.execute("BEGIN IMMEDIATE")
         row = db.execute("""SELECT j.* FROM jobs j
-          WHERE (j.status='queued' OR (j.status='waiting_connection' AND COALESCE(j.started_at,0) <= ?))
+          WHERE (
+            (j.status='queued' AND COALESCE(j.run_at, 0) <= ?)
+            OR (j.status='waiting_connection' AND COALESCE(j.started_at,0) <= ?)
+          )
           AND NOT EXISTS (SELECT 1 FROM jobs r WHERE r.account_id=j.account_id AND r.status='running')
-          ORDER BY j.created_at LIMIT 1""", (int(time.time()) - 5,)).fetchone()
+          ORDER BY COALESCE(j.run_at, j.created_at) ASC, j.created_at ASC LIMIT 1""", (now, now - 5)).fetchone()
         if not row:
             return None
         updated = db.execute("UPDATE jobs SET status='running', started_at=?, attempts=attempts+1 WHERE id=? AND status IN ('queued','waiting_connection')",
-                             (int(time.time()), row["id"])).rowcount
+                             (now, row["id"])).rowcount
         if not updated:
             return None
     return get_row("jobs", row["id"])

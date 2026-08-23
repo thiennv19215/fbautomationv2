@@ -46,6 +46,7 @@ class ExtensionSession:
         self.failed_count = 0
         self.last_error: Optional[str] = None
         self.pending: dict[str, asyncio.Future] = {}
+        self.operation_lock: asyncio.Lock = asyncio.Lock()
 
     def to_dict(self) -> dict:
         return {

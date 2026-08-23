@@ -643,6 +643,30 @@ function Overview({
 
   return (
     <>
+      {!data.health?.has_template && (
+        <div style={{
+          background: "linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%)",
+          border: "1px solid #fde68a",
+          borderRadius: "12px",
+          padding: "14px 18px",
+          marginBottom: "18px",
+          display: "flex",
+          alignItems: "center",
+          gap: "14px",
+          color: "#92400e"
+        }}>
+          <span style={{ fontSize: "22px" }}>⚠️</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: "13.5px", color: "#b45309" }}>
+              Chưa có Mẫu Gói Tin (Template Capture) để xuất bản tự động
+            </div>
+            <div style={{ marginTop: "3px", fontSize: "12.5px", color: "#78350f", lineHeight: "1.4" }}>
+              Để đăng Reel / Ảnh tự động, bạn hãy mở tab Chrome có Extension và <b>đăng tay 1 bài Reel ngắn trên Facebook</b>. Hệ thống sẽ tự động học mẫu gói tin 1 lần duy nhất để sẵn sàng đăng tự động.
+            </div>
+          </div>
+        </div>
+      )}
+
       <section className="stats-grid">
         <Stat
           icon={UsersRound}
@@ -2437,7 +2461,13 @@ function Jobs({
                         <small>{j.attempts}/{j.max_attempts} lần thử</small>
                       </td>
                       <td>
-                        <Badge status={j.status} />
+                        {j.status === "queued" && j.run_at && j.run_at > Math.floor(Date.now() / 1000) ? (
+                          <span className="badge badge-queued" style={{ background: "#eff6ff", color: "#2563eb", borderColor: "#bfdbfe" }} title={`Dự kiến chạy lúc: ${new Date(j.run_at * 1000).toLocaleTimeString()}`}>
+                            <Clock3 /> Giãn cách ({Math.max(1, j.run_at - Math.floor(Date.now() / 1000))}s)
+                          </span>
+                        ) : (
+                          <Badge status={j.status} />
+                        )}
                       </td>
                       <td className={j.error ? "error-text" : "result-text"}>
                         {j.error || (j.result ? "Đã có kết quả xuất bản" : "—")}
@@ -3080,6 +3110,9 @@ function JobModal({ accounts, scripts, initialAccount, initialAccountIds, initia
     inputText: "{}",
     useJsonOverride: false,
     scheduled: "",
+    enableStagger: true,
+    staggerSeconds: 30,
+    jitterSeconds: 10,
   });
   const [jsonError, setJsonError] = useState("");
 
@@ -3132,6 +3165,9 @@ function JobModal({ accounts, scripts, initialAccount, initialAccountIds, initia
         scriptId: form.mode === "script" ? form.scriptId : undefined,
         kind: form.mode === "direct" ? form.kind : undefined,
         input,
+        enableStagger: form.enableStagger,
+        staggerSeconds: form.staggerSeconds,
+        jitterSeconds: form.jitterSeconds,
       });
     } catch {
       setJsonError("JSON ghi đè hoặc thời gian lên lịch không hợp lệ.");
@@ -3237,6 +3273,67 @@ function JobModal({ accounts, scripts, initialAccount, initialAccountIds, initia
               {defaultScript && (
                 <div>📜 Kịch bản mẫu mặc định: <b>{defaultScript.name}</b></div>
               )}
+            </div>
+          )}
+
+          {form.accountIds.length > 1 && (
+            <div style={{
+              background: "#eff6ff",
+              border: "1px solid #bfdbfe",
+              borderRadius: "8px",
+              padding: "10px 14px",
+              marginTop: "8px",
+              display: "flex",
+              flexDirection: "column",
+              gap: "8px",
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "6px", fontWeight: "700", color: "#1e40af", fontSize: "13px" }}>
+                  <ShieldCheck style={{ width: "16px", height: "16px", color: "#2563eb" }} />
+                  Giãn cách an toàn chống Spam (Stagger Delay)
+                </div>
+                <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", cursor: "pointer", color: "#1e3a8a", fontWeight: "600" }}>
+                  <input
+                    type="checkbox"
+                    checked={form.enableStagger}
+                    onChange={(e) => setForm({ ...form, enableStagger: e.target.checked })}
+                  />
+                  Bật giãn cách
+                </label>
+              </div>
+              {form.enableStagger && (
+                <div style={{ display: "flex", gap: "14px", flexWrap: "wrap", alignItems: "center" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#1e3a8a" }}>
+                    <span>Nghỉ giữa các nick:</span>
+                    <input
+                      type="number"
+                      min="5"
+                      max="600"
+                      style={{ width: "65px", padding: "4px 8px", borderRadius: "6px", border: "1px solid #93c5fd", fontSize: "12px", textAlign: "center", background: "#fff" }}
+                      value={form.staggerSeconds}
+                      onChange={(e) => setForm({ ...form, staggerSeconds: Math.max(0, parseInt(e.target.value) || 0) })}
+                    />
+                    <span>giây</span>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#1e3a8a" }}>
+                    <span>Biến thiên ngẫu nhiên:</span>
+                    <input
+                      type="number"
+                      min="0"
+                      max="120"
+                      style={{ width: "60px", padding: "4px 8px", borderRadius: "6px", border: "1px solid #93c5fd", fontSize: "12px", textAlign: "center", background: "#fff" }}
+                      value={form.jitterSeconds}
+                      onChange={(e) => setForm({ ...form, jitterSeconds: Math.max(0, parseInt(e.target.value) || 0) })}
+                    />
+                    <span>± giây</span>
+                  </div>
+                </div>
+              )}
+              <div style={{ fontSize: "11px", color: "#2563eb" }}>
+                💡 {form.enableStagger
+                  ? `Tự động xếp lịch: Nick 1 đăng ngay · Nick 2 sau ~${form.staggerSeconds}s · Nick 3 sau ~${form.staggerSeconds * 2}s... tránh đăng đồng loạt cùng 1 giây.`
+                  : "⚠️ Tắt giãn cách có thể khiến Facebook quét spam do các nick cùng IP đăng bài cùng 1 giây."}
+              </div>
             </div>
           )}
         </Field>

@@ -23,6 +23,7 @@ import os
 import re
 import time
 from typing import Any, Optional
+from pathlib import Path
 from urllib.parse import parse_qs
 
 from .config import captures_dir
@@ -194,8 +195,26 @@ def save_capture(payload: dict, extension_id: str | None = None) -> None:
 
     # Atomic write
     tmp = template_path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(template, indent=2), encoding="utf-8")
+    tmp.write_text(json.dumps(template, indent=2, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, template_path)
+
+    # If this template has a complete mutation, also mirror it to root template.json
+    if template.get("graphql") or template.get("graphql_photo") or template.get("rupload"):
+        try:
+            _ensure_dir()
+            root_tpl = load_template() or {}
+            # Merge fields into root template
+            for k, v in template.items():
+                if k == "graphql_ops" and isinstance(v, dict):
+                    root_tpl.setdefault("graphql_ops", {}).update(v)
+                elif v:
+                    root_tpl[k] = v
+            root_tpl["updatedAt"] = int(time.time())
+            root_tmp = _TEMPLATE_PATH.with_suffix(".json.tmp")
+            root_tmp.write_text(json.dumps(root_tpl, indent=2, ensure_ascii=False), encoding="utf-8")
+            os.replace(root_tmp, _TEMPLATE_PATH)
+        except Exception as exc:
+            logger.debug("failed to mirror template to root: %s", exc)
 
 
 def template_complete(t: Optional[dict]) -> bool:
@@ -224,7 +243,7 @@ def capture_stats(extension_id: str | None = None) -> dict:
 
 
 def load_template(extension_id: str | None = None) -> Optional[dict]:
-    """Return the current template.json contents, checking scoped dir then falling back to root."""
+    """Return the current template.json contents, checking scoped dir then falling back to root or other complete profiles."""
     paths_to_check: list[Path] = []
     if extension_id and extension_id.strip():
         safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", extension_id.strip())
@@ -232,12 +251,34 @@ def load_template(extension_id: str | None = None) -> Optional[dict]:
             paths_to_check.append(_CAPTURES_DIR / safe_id / "template.json")
     paths_to_check.append(_TEMPLATE_PATH)
 
+    # First pass: check direct paths
     for p in paths_to_check:
         if p.exists():
             try:
                 data: Any = json.loads(p.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
+                if isinstance(data, dict) and template_complete(data):
                     return data
             except (json.JSONDecodeError, OSError) as exc:
                 logger.warning("failed to read %s: %s", p, exc)
+
+    # Second pass: check any subdirectory that has a complete template
+    if _CAPTURES_DIR.exists():
+        sub_templates = sorted(_CAPTURES_DIR.glob("*/template.json"), key=lambda x: x.stat().st_mtime, reverse=True)
+        for p in sub_templates:
+            try:
+                data: Any = json.loads(p.read_text(encoding="utf-8"))
+                if isinstance(data, dict) and (template_complete(data) or bool(data.get("graphql_ops"))):
+                    return data
+            except (json.JSONDecodeError, OSError):
+                continue
+
+    # Fallback to whatever exists in root even if incomplete
+    if _TEMPLATE_PATH.exists():
+        try:
+            data = json.loads(_TEMPLATE_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+
     return None
