@@ -671,11 +671,23 @@ async def _handle_update(token: str, update: dict):
         video = msg.get("video") or msg.get("animation") or (msg.get("document") if msg.get("document", {}).get("mime_type", "").startswith("video/") else None)
         if video:
             file_id = video.get("file_id")
-            file_size_mb = round((video.get("file_size", 0) / (1024 * 1024)), 1)
-            await send_message(f"📥 <i>Đã nhận Video ({file_size_mb} MB). Đang xử lý...</i>", chat_id=chat_id)
+            file_size_bytes = video.get("file_size", 0)
+            file_size_mb = round((file_size_bytes / (1024 * 1024)), 1)
+
+            if file_size_bytes > 20 * 1024 * 1024:
+                big_msg = (
+                    f"⚠️ <b>Video của bạn ({file_size_mb} MB) vượt quá giới hạn 20MB của Telegram Bot API.</b>\n\n"
+                    "💡 <b>Cách khắc phục:</b>\n"
+                    "1️⃣ <b>Gửi video &lt; 20MB</b> (Video Reels &lt; 90s chuẩn 1080p thường chỉ nặng khoảng 5–15MB).\n"
+                    f"2️⃣ <b>Hoặc kéo thả trực tiếp vào Web Dashboard:</b> <code>http://127.0.0.1:47102/</code> (Không giới hạn dung lượng file)."
+                )
+                await send_message(big_msg, chat_id=chat_id, reply_markup=_MAIN_KEYBOARD)
+                return
+
+            await send_message(f"📥 <i>Đã nhận Video ({file_size_mb} MB). Đang tải về...</i>", chat_id=chat_id)
             dest = await _download_telegram_file(token, file_id, ".mp4")
             if not dest:
-                await send_message("❌ Không thể tải video từ Telegram. Vui lòng thử lại!", chat_id=chat_id)
+                await send_message("❌ Không thể tải video từ Telegram. Vui lòng thử lại!", chat_id=chat_id, reply_markup=_MAIN_KEYBOARD)
                 return
 
             pages = pages_store.list_pages()
