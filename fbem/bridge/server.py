@@ -115,6 +115,10 @@ class AccountBody(BaseModel):
     parentId: str | None = None
     parent_id: str | None = None
     notes: str = ""
+    assignedFolder: str | None = None
+    assigned_folder: str | None = None
+    defaultScriptId: str | None = None
+    default_script_id: str | None = None
     enabled: bool = True
 
     @property
@@ -425,8 +429,10 @@ def _safe_resolve_media(rel_name: str) -> Path | None:
     return None
 
 
-def cleanup_media_file(url_or_path: str) -> None:
-    """Delete a media file from media dirs once scheduled or posted successfully."""
+def cleanup_media_file(url_or_path: str, job_id: str | None = None) -> bool:
+    """Delete a media file from media dirs once scheduled or posted successfully.
+    Skips deletion if other queued/running jobs still need this media file.
+    """
     try:
         from urllib.parse import urlparse, parse_qs
         filename = None
@@ -436,18 +442,26 @@ def cleanup_media_file(url_or_path: str) -> None:
         if not filename:
             filename = url_or_path.replace("http://127.0.0.1:47102/local-video?name=", "").replace("http://127.0.0.1:47102/local-image?name=", "")
 
+        # Check if other active jobs still need this media file
+        remaining_jobs = admin_store.count_active_jobs_with_media(filename or url_or_path, exclude_job_id=job_id)
+        if remaining_jobs > 0:
+            logger.info("Media file %s still needed by %d active jobs; preserving for now.", filename or url_or_path, remaining_jobs)
+            return False
+
         p = _safe_resolve_media(filename)
         if p and p.is_file():
             p.unlink(missing_ok=True)
-            logger.info("Deleted posted media file: %s", p)
-            return
+            logger.info("Successfully deleted posted media file: %s (avoid duplicates)", p)
+            return True
 
         p3 = Path(url_or_path).expanduser().resolve()
         if p3.is_file():
             p3.unlink(missing_ok=True)
-            logger.info("Deleted source media file: %s", p3)
+            logger.info("Successfully deleted source media file: %s (avoid duplicates)", p3)
+            return True
     except Exception as e:
         logger.warning("Error cleaning up media file %s: %s", url_or_path, e)
+    return False
 
 
 @app.post("/post-reel")

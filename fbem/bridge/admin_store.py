@@ -59,6 +59,70 @@ def init_db() -> None:
             db.execute("ALTER TABLE accounts ADD COLUMN parent_id TEXT")
         if "notes" not in cols:
             db.execute("ALTER TABLE accounts ADD COLUMN notes TEXT DEFAULT ''")
+        if "assigned_folder" not in cols:
+            db.execute("ALTER TABLE accounts ADD COLUMN assigned_folder TEXT DEFAULT ''")
+        if "default_script_id" not in cols:
+            db.execute("ALTER TABLE accounts ADD COLUMN default_script_id TEXT DEFAULT ''")
+
+        # Seed default script templates if empty
+        script_count = db.execute("SELECT COUNT(*) FROM scripts").fetchone()[0]
+        if script_count == 0:
+            now = int(time.time())
+            default_templates = [
+                (
+                    "tpl-reel-viral",
+                    "Nuôi Reel Xu Hướng (Viral Feed)",
+                    "Mẫu đăng Reel tăng tương tác tự nhiên với hashtag viral tối ưu thuật toán Facebook Reels.",
+                    "post_reel",
+                    json.dumps({
+                        "caption": "Cả nhà thấy clip này thế nào? Đừng quên thả tim và follow kênh để xem thêm nhiều video thú vị mỗi ngày nhé! ❤️",
+                        "hashtags": "#reels #xuhuong #trending #viral #fyp #facebookreels #fbem",
+                        "videoUrl": ""
+                    }, ensure_ascii=False),
+                    1, 1, now, now
+                ),
+                (
+                    "tpl-review-affiliate",
+                    "Review Sản Phẩm & Bán Hàng",
+                    "Mẫu review sản phẩm, kích thích mua sắm và điều hướng comment / inbox mua hàng.",
+                    "post_reel",
+                    json.dumps({
+                        "caption": "Review siêu phẩm đỉnh chóp cho cả nhà tham khảo. Chi tiết thông tin và link mua chính hãng để ở dưới comment nha! 🔥",
+                        "hashtags": "#review #muasam #shopping #dealhot #xuhuong #reels #sanphammoi",
+                        "videoUrl": ""
+                    }, ensure_ascii=False),
+                    1, 1, now, now
+                ),
+                (
+                    "tpl-album-photos",
+                    "Đăng Album Ảnh & Khuyến Mãi",
+                    "Mẫu đăng 1 hoặc nhiều ảnh với lời chào theo tên Fanpage {{page_name}} và ngày đăng tự động {{date}}.",
+                    "post_photos",
+                    json.dumps({
+                        "caption": "BST mới nhất đã cập bến nhà {{page_name}} ngày {{date}}! 🎁 Inbox ngay để nhận ưu đãi đặc biệt hôm nay.",
+                        "hashtags": "#album #sanphammoi #khuyenmai #sale #hotdeal #feedback",
+                        "imageUrls": []
+                    }, ensure_ascii=False),
+                    1, 1, now, now
+                ),
+                (
+                    "tpl-tips-knowledge",
+                    "Chia Sẻ Kiến Thức & Tips Hay",
+                    "Mẫu video chia sẻ mẹo vặt, bài học hữu ích nhằm xây dựng tệp tương tác trung thành.",
+                    "post_reel",
+                    json.dumps({
+                        "caption": "Bí quyết hữu ích mỗi ngày dành cho bạn. Lưu lại ngay kẻo quên nhé! Chúc cả nhà một ngày tràn đầy năng lượng! ✨",
+                        "hashtags": "#kienthuc #meohay #lifestyle #kinhnghiem #xuhuong #reels",
+                        "videoUrl": ""
+                    }, ensure_ascii=False),
+                    1, 1, now, now
+                ),
+            ]
+            db.executemany("""
+                INSERT OR IGNORE INTO scripts
+                (id, name, description, kind, config_json, enabled, version, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, default_templates)
 
 
 def _row(row: sqlite3.Row | None) -> dict | None:
@@ -99,15 +163,17 @@ def save_account(data: dict, item_id: str | None = None) -> dict:
     account_type = str(data.get("accountType") or data.get("account_type") or "page").strip()
     parent_id = data.get("parentId") or data.get("parent_id")
     notes = str(data.get("notes") or "")
+    assigned_folder = str(data.get("assignedFolder") or data.get("assigned_folder") or "").strip()
+    default_script_id = str(data.get("defaultScriptId") or data.get("default_script_id") or "").strip()
     enabled = int(data.get("enabled", True))
 
     with _connect() as db:
         existing = db.execute("SELECT created_at FROM accounts WHERE id=?", (item_id,)).fetchone()
         db.execute("""INSERT OR REPLACE INTO accounts
-          (id,name,facebook_id,extension_id,enabled,account_type,parent_id,notes,created_at,updated_at)
-          VALUES(?,?,?,?,?,?,?,?,?,?)""",
+          (id,name,facebook_id,extension_id,enabled,account_type,parent_id,notes,assigned_folder,default_script_id,created_at,updated_at)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
           (item_id, name, facebook_id, extension_id, enabled,
-           account_type, parent_id, notes,
+           account_type, parent_id, notes, assigned_folder, default_script_id,
            existing[0] if existing else now, now))
     return get_row("accounts", item_id) or {}
 
@@ -225,3 +291,26 @@ def dashboard_stats() -> dict:
             "jobsByStatus": statuses,
             "succeededToday": today,
         }
+
+
+def count_active_jobs_with_media(rel_or_path: str, exclude_job_id: str | None = None) -> int:
+    """Count other active jobs that reference this media file before deleting."""
+    if not rel_or_path:
+        return 0
+    from pathlib import Path
+    clean = rel_or_path.strip().replace("\\", "/").lstrip("/")
+    base_name = Path(clean).name
+    with _connect() as db:
+        query = "SELECT id, input_json FROM jobs WHERE status IN ('queued', 'running', 'waiting_connection')"
+        params = []
+        if exclude_job_id:
+            query += " AND id != ?"
+            params.append(exclude_job_id)
+        rows = db.execute(query, params).fetchall()
+        count = 0
+        for r in rows:
+            inp = r["input_json"] or ""
+            if clean in inp or base_name in inp:
+                count += 1
+        return count
+

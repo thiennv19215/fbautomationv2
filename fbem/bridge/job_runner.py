@@ -66,10 +66,10 @@ async def execute_job(job: dict) -> None:
             try:
                 from .server import cleanup_media_file
                 if method == "post_reel" and payload.get("videoUrl"):
-                    cleanup_media_file(str(payload["videoUrl"]))
+                    cleanup_media_file(str(payload["videoUrl"]), job_id=job["id"])
                 elif method == "post_photos" and payload.get("imageUrls"):
                     for img in payload["imageUrls"]:
-                        cleanup_media_file(str(img))
+                        cleanup_media_file(str(img), job_id=job["id"])
             except Exception as clean_err:
                 logger.warning(f"Error cleaning media for job {job['id']}: {clean_err}")
     except Exception as exc:  # noqa: BLE001

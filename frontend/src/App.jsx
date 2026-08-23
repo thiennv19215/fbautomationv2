@@ -437,6 +437,7 @@ export default function App() {
                   accounts={data.accounts}
                   extensions={data.extensions}
                   extensionMap={extensionMap}
+                  scripts={data.scripts}
                   jobs={data.jobs}
                   setModal={setModal}
                   notify={notify}
@@ -454,11 +455,13 @@ export default function App() {
               )}
               {view === "media" && (
                 <MediaLibrary
+                  accounts={data.accounts}
+                  scripts={data.scripts}
                   setModal={setModal}
                   notify={notify}
                 />
               )}
-              {view === "scripts" && <Scripts scripts={data.scripts} setModal={setModal} />}
+              {view === "scripts" && <Scripts scripts={data.scripts} accounts={data.accounts} setModal={setModal} />}
               {view === "jobs" && (
                 <Jobs
                   jobs={filteredJobs}
@@ -498,6 +501,7 @@ export default function App() {
         <AccountModal
           extensions={data.extensions}
           account={modal?.account}
+          scripts={data.scripts}
           defaultExtensionId={modal?.defaultExtensionId}
           close={() => setModal(null)}
           submit={(body) =>
@@ -832,7 +836,7 @@ function Overview({
   );
 }
 
-function Accounts({ accounts, extensions, extensionMap, jobs, setModal, notify, reload }) {
+function Accounts({ accounts, extensions, extensionMap, scripts = [], jobs, setModal, notify, reload }) {
   const [search, setSearch] = useState("");
   const [statusTab, setStatusTab] = useState("all"); // 'all', 'online', 'offline', 'has_pages'
   const [viewMode, setViewMode] = useState("list");
@@ -840,6 +844,11 @@ function Accounts({ accounts, extensions, extensionMap, jobs, setModal, notify, 
   const [scanning, setScanning] = useState(null);
   const [scanningPages, setScanningPages] = useState(null);
   const [scanningAll, setScanningAll] = useState(false);
+
+  const scriptMap = useMemo(
+    () => Object.fromEntries(scripts.map((s) => [s.id, s])),
+    [scripts]
+  );
 
   // Group accounts by extension ID
   const viaGroups = useMemo(() => {
@@ -892,6 +901,7 @@ function Accounts({ accounts, extensions, extensionMap, jobs, setModal, notify, 
         (p.name || "").toLowerCase().includes(q) ||
         String(p.facebook_id || "").toLowerCase().includes(q) ||
         (p.notes || "").toLowerCase().includes(q) ||
+        (p.assigned_folder || "").toLowerCase().includes(q) ||
         (p.ext.fbUser?.name || "").toLowerCase().includes(q) ||
         String(p.ext.fbUser?.id || "").toLowerCase().includes(q) ||
         (p.ext.id || "").toLowerCase().includes(q)
@@ -925,28 +935,72 @@ function Accounts({ accounts, extensions, extensionMap, jobs, setModal, notify, 
 
   const onlineVias = useMemo(() => viaGroups.filter((g) => g.isOnline), [viaGroups]);
   const totalPagesCount = accounts.length;
-  const activeQueuedJobs = useMemo(
-    () => jobs.filter((j) => ["queued", "running", "waiting_connection"].includes(j.status)).length,
-    [jobs]
-  );
+  const activeQueuedJobs = jobs.filter((j) =>
+    ["queued", "running", "waiting_connection"].includes(j.status)
+  ).length;
 
-  const scanIdentity = async (extId) => {
-    setScanning(extId);
+  const scanIdentity = async (extensionId) => {
+    setScanning(extensionId);
     try {
-      const res = await endpoints.extensionIdentity(extId);
-      notify(`Đang đăng nhập: ${res.name || res.id}`);
-      reload();
-    } catch (err) {
-      notify(err.message, "error");
+      const res = await endpoints.extensionIdentity(extensionId);
+      if (res && res.id) {
+        notify(`Tab hiện tại: ${res.name || "FB User"} (${res.id})`);
+        reload();
+      } else {
+        notify("Không phát hiện tab Facebook nào đang mở trên Nick này.", "error");
+      }
+    } catch (e) {
+      notify(e.message, "error");
     } finally {
       setScanning(null);
     }
   };
 
+  const scanAllPages = async (extensionId) => {
+    setScanningPages(extensionId);
+    try {
+      const res = await endpoints.scanPages(extensionId);
+      if (res && res.created >= 0) {
+        notify(`Quét xong! Phát hiện ${res.found} Page, đã thêm mới ${res.created} Page.`);
+        reload();
+      }
+    } catch (e) {
+      notify(e.message, "error");
+    } finally {
+      setScanningPages(null);
+    }
+  };
 
-  const togglePageSelect = (pageId) => {
-    setSelectedPageIds((prev) =>
-      prev.includes(pageId) ? prev.filter((id) => id !== pageId) : [...prev, pageId]
+  const scanAllOnlineVias = async () => {
+    if (onlineVias.length === 0) {
+      notify("Không có Nick Via nào đang online để quét.", "error");
+      return;
+    }
+    setScanningAll(true);
+    let totalFound = 0;
+    let totalCreated = 0;
+    try {
+      for (const group of onlineVias) {
+        try {
+          const res = await endpoints.scanPages(group.ext.id);
+          if (res) {
+            totalFound += res.found || 0;
+            totalCreated += res.created || 0;
+          }
+        } catch (err) {
+          console.warn("Scan failed for via:", group.ext.id, err);
+        }
+      }
+      notify(`Đã quét toàn bộ Nick Via online: Tìm thấy ${totalFound} Page, thêm mới ${totalCreated} Page.`);
+      reload();
+    } finally {
+      setScanningAll(false);
+    }
+  };
+
+  const togglePageSelect = (id) => {
+    setSelectedPageIds((curr) =>
+      curr.includes(id) ? curr.filter((x) => x !== id) : [...curr, id]
     );
   };
 
@@ -967,12 +1021,14 @@ function Accounts({ accounts, extensions, extensionMap, jobs, setModal, notify, 
         accountType: acc.account_type || "page",
         parentId: acc.parent_id || null,
         notes: acc.notes || "",
+        assignedFolder: acc.assigned_folder,
+        defaultScriptId: acc.default_script_id,
         enabled: !acc.enabled,
       });
-      notify(`Đã ${!acc.enabled ? "bật" : "tắt"} Fanpage: ${acc.name}`);
+      notify(`Đã ${!acc.enabled ? "bật" : "tắt"} Fanpage ${acc.name}`);
       reload();
-    } catch (err) {
-      notify(err.message, "error");
+    } catch (e) {
+      notify(e.message, "error");
     }
   };
 
@@ -1020,15 +1076,15 @@ function Accounts({ accounts, extensions, extensionMap, jobs, setModal, notify, 
         }
       />
 
-      {/* Metrics Summary Bar */}
-      <div className="metrics-grid">
+      {/* Metric Quick Stats */}
+      <div className="metric-cards-row">
         <div className="metric-card">
           <div className="metric-icon" style={{ background: "#eff6ff", color: "#2563eb" }}>
             <Flag />
           </div>
           <div>
             <span>Tổng số Fanpage</span>
-            <b style={{ color: "#2563eb" }}>{totalPagesCount}</b>
+            <b>{totalPagesCount}</b>
           </div>
         </div>
 
@@ -1150,6 +1206,7 @@ function Accounts({ accounts, extensions, extensionMap, jobs, setModal, notify, 
                     <th>Fanpage</th>
                     <th>Facebook Page ID</th>
                     <th>Nick Via Quản trị</th>
+                    <th>📁 Thư mục & 📜 Kịch bản gán</th>
                     <th>Trạng thái</th>
                     <th>Hàng đợi</th>
                     <th style={{ textAlign: "right" }}>Thao tác</th>
@@ -1221,6 +1278,22 @@ function Accounts({ accounts, extensions, extensionMap, jobs, setModal, notify, 
                           </div>
                         </td>
                         <td>
+                          <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
+                            {a.assigned_folder ? (
+                              <span style={{ fontSize: "12px", color: "#0284c7", fontWeight: "600", display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                                📁 /{a.assigned_folder === "root" ? "Gốc" : a.assigned_folder}
+                              </span>
+                            ) : (
+                              <span style={{ fontSize: "11px", color: "var(--muted)" }}>📁 Chưa gán folder</span>
+                            )}
+                            {a.default_script_id && scriptMap[a.default_script_id] ? (
+                              <span style={{ fontSize: "11px", color: "#7c3aed", fontWeight: "500", display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                                📜 {scriptMap[a.default_script_id].name}
+                              </span>
+                            ) : null}
+                          </div>
+                        </td>
+                        <td>
                           <label className="read-only" style={{ cursor: "pointer" }}>
                             <input
                               type="checkbox"
@@ -1246,14 +1319,14 @@ function Accounts({ accounts, extensions, extensionMap, jobs, setModal, notify, 
                             <button
                               className="primary compact"
                               disabled={!a.enabled || !a.isOnline}
-                              onClick={() => setModal({ type: "job", accountId: a.id })}
-                              title="Tạo bài đăng ngay cho Page này"
+                              onClick={() => setModal({ type: "job", accountId: a.id, initialAccount: a.id })}
+                              title={a.assigned_folder ? `Đăng bài từ thư mục ${a.assigned_folder}` : "Tạo bài đăng ngay cho Page này"}
                             >
                               <Plus /> Đăng ngay
                             </button>
                             <button
                               className="icon-button"
-                              title="Chỉnh sửa Fanpage"
+                              title="Chỉnh sửa Fanpage & Gán thư mục"
                               onClick={() => setModal({ type: "account", account: a })}
                             >
                               <Pencil />
@@ -1734,7 +1807,7 @@ function ExtensionCard({ extension: e, childPages = [], setModal, notify, reload
   );
 }
 
-function MediaLibrary({ setModal, notify }) {
+function MediaLibrary({ accounts = [], scripts = [], setModal, notify }) {
   const [mediaData, setMediaData] = useState({ folders: [], items: [], totalFiles: 0, totalSize: 0 });
   const [loading, setLoading] = useState(false);
   const [activeFolder, setActiveFolder] = useState("all");
@@ -1756,6 +1829,14 @@ function MediaLibrary({ setModal, notify }) {
   useEffect(() => {
     loadMedia();
   }, [loadMedia]);
+
+  const linkedAccounts = useMemo(() => {
+    if (activeFolder === "all") return [];
+    const targetPath = activeFolder === "root" ? "root" : activeFolder;
+    return accounts.filter(
+      (a) => (a.assigned_folder || "") === targetPath || (!a.assigned_folder && targetPath === "root")
+    );
+  }, [accounts, activeFolder]);
 
   const filteredItems = useMemo(() => {
     let list = mediaData.items || [];
@@ -1872,6 +1953,69 @@ function MediaLibrary({ setModal, notify }) {
           </button>
         ))}
       </div>
+
+      {/* Folder link to Fanpages status banner */}
+      {activeFolder !== "all" && (
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: "12px",
+          padding: "10px 16px",
+          background: "#f0f9ff",
+          border: "1px solid #bae6fd",
+          borderRadius: "8px",
+          marginBottom: "16px",
+          flexWrap: "wrap"
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+            <span style={{ fontSize: "13px", fontWeight: "700", color: "#0369a1" }}>
+              📁 Thư mục: /{activeFolder === "root" ? "Gốc" : activeFolder}
+            </span>
+            {linkedAccounts.length > 0 ? (
+              <>
+                <span style={{ fontSize: "12px", color: "#0284c7" }}>· Đã gán cho <b>{linkedAccounts.length} Fanpage</b>:</span>
+                {linkedAccounts.map((a) => (
+                  <span
+                    key={a.id}
+                    style={{
+                      fontSize: "11px",
+                      padding: "2px 8px",
+                      background: "#ffffff",
+                      border: "1px solid #7dd3fc",
+                      borderRadius: "12px",
+                      color: "#0369a1",
+                      fontWeight: "600"
+                    }}
+                  >
+                    🚩 {a.name}
+                  </span>
+                ))}
+              </>
+            ) : (
+              <span style={{ fontSize: "12px", color: "#64748b" }}>
+                · Chưa có Fanpage nào gán riêng thư mục này (Vào tab <b>Quản lý Fanpage</b> $\rightarrow$ Sửa Page để gán).
+              </span>
+            )}
+          </div>
+
+          {linkedAccounts.length > 0 && (
+            <button
+              type="button"
+              className="primary compact"
+              onClick={() =>
+                setModal({
+                  type: "job",
+                  initialAccountIds: linkedAccounts.map((a) => a.id),
+                })
+              }
+              title="Đăng bài hàng loạt cho các Fanpage đã gán thư mục này"
+            >
+              <Layers /> Đăng lên {linkedAccounts.length} Page đã gán
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Filter and Search Bar */}
       <div className="search-filter-bar">
@@ -1998,62 +2142,152 @@ function MediaLibrary({ setModal, notify }) {
   );
 }
 
-function Scripts({ scripts, setModal }) {
+function Scripts({ scripts, accounts = [], setModal }) {
   return (
     <>
       <PageToolbar
-        title={`${scripts.length} kịch bản`}
-        subtitle="Cấu hình nội dung được tái sử dụng trên các tài khoản."
+        title={`${scripts.length} Kịch bản mẫu`}
+        subtitle="Quản lý toàn bộ kịch bản đăng bài có sẵn và kịch bản do bạn thiết lập theo từng chủ đề."
         action={
-          <button className="primary" onClick={() => setModal("script")}>
-            <Plus /> Tạo kịch bản
-          </button>
+          <div style={{ display: "flex", gap: "8px" }}>
+            <button className="primary" onClick={() => setModal("script")}>
+              <Plus /> Tạo kịch bản mới
+            </button>
+          </div>
         }
       />
       {scripts.length ? (
         <div className="script-grid">
-          {scripts.map((s) => (
-            <article className="script-card" key={s.id}>
-              <div className={`script-symbol ${s.kind}`}><BookOpen /></div>
-              <div className="script-main">
-                <div className="script-heading">
-                  <Badge status={s.enabled ? "online" : "offline"} />
-                  <div className="inline-actions">
-                    <span>Phiên bản {s.version}</span>
-                    <button
-                      className="icon-button"
-                      title="Chỉnh sửa"
-                      onClick={() => setModal({ type: "script", script: s })}
-                    >
-                      <Pencil />
-                    </button>
-                    <button
-                      className="icon-button danger"
-                      title="Xóa"
-                      onClick={() =>
-                        setModal({
-                          type: "confirm",
-                          title: "Xóa kịch bản?",
-                          text: `Kịch bản ${s.name} sẽ bị xóa. Các job đã chạy vẫn giữ input và kết quả.`,
-                          label: "Xóa kịch bản",
-                          success: "Đã xóa kịch bản",
-                          action: () => endpoints.deleteScript(s.id),
-                        })
-                      }
-                    >
-                      <Trash2 />
-                    </button>
+          {scripts.map((s) => {
+            const config = s.config || {};
+            const linkedAccounts = accounts.filter((a) => a.default_script_id === s.id);
+            const previewCaption = config.caption || "";
+            const previewHashtags = config.hashtags || "";
+
+            return (
+              <article className="script-card" key={s.id} style={{ display: "flex", flexDirection: "column" }}>
+                <div style={{ display: "flex", gap: "16px", alignItems: "flex-start" }}>
+                  <div className={`script-symbol ${s.kind}`}><BookOpen /></div>
+                  <div className="script-main" style={{ flex: 1 }}>
+                    <div className="script-heading">
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <Badge status={s.enabled ? "online" : "offline"} />
+                        <span style={{ fontSize: "11px", color: "var(--muted)", fontWeight: "600" }}>v{s.version}</span>
+                      </div>
+                      <div className="inline-actions">
+                        <button
+                          className="icon-button"
+                          title="Chỉnh sửa kịch bản"
+                          onClick={() => setModal({ type: "script", script: s })}
+                        >
+                          <Pencil />
+                        </button>
+                        <button
+                          className="icon-button danger"
+                          title="Xóa kịch bản"
+                          onClick={() =>
+                            setModal({
+                              type: "confirm",
+                              title: "Xóa kịch bản?",
+                              text: `Kịch bản "${s.name}" sẽ bị xóa. Lịch sử các job đã chạy trước đó vẫn được giữ lại.`,
+                              label: "Xóa kịch bản",
+                              success: "Đã xóa kịch bản",
+                              action: () => endpoints.deleteScript(s.id),
+                            })
+                          }
+                        >
+                          <Trash2 />
+                        </button>
+                      </div>
+                    </div>
+                    <h3 style={{ margin: "6px 0 4px", fontSize: "15px", fontWeight: "800", color: "#0f172a" }}>{s.name}</h3>
+                    <p style={{ fontSize: "12px", color: "var(--muted)", margin: "0 0 10px", lineHeight: "1.4" }}>
+                      {s.description || "Chưa có mô tả cho kịch bản này."}
+                    </p>
                   </div>
                 </div>
-                <h3>{s.name}</h3>
-                <p>{s.description || "Chưa có mô tả cho kịch bản này."}</p>
-                <div className="script-meta">
-                  <span><Settings2 /> {KIND_LABEL[s.kind] || s.kind}</span>
-                  <span><Clock3 /> Cập nhật {relativeTime(s.updated_at)}</span>
+
+                {/* Content preview box */}
+                {(previewCaption || previewHashtags) && (
+                  <div style={{
+                    background: "#f8fafc",
+                    border: "1px solid #e2e8f0",
+                    borderRadius: "10px",
+                    padding: "10px 12px",
+                    margin: "10px 0",
+                    fontSize: "12px",
+                    color: "#334155"
+                  }}>
+                    {previewCaption && (
+                      <div style={{
+                        display: "-webkit-box",
+                        WebkitLineClamp: 2,
+                        WebkitBoxOrient: "vertical",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        lineHeight: "1.4"
+                      }}>
+                        💬 <b>Caption:</b> {previewCaption}
+                      </div>
+                    )}
+                    {previewHashtags && (
+                      <div style={{ marginTop: "6px", color: "#2563eb", fontWeight: "600", fontSize: "11px" }}>
+                        🏷️ {previewHashtags}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Linked Accounts */}
+                <div style={{ margin: "4px 0 12px" }}>
+                  {linkedAccounts.length > 0 ? (
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                      <span style={{ fontSize: "11px", color: "#64748b" }}>Gán cho {linkedAccounts.length} Page:</span>
+                      {linkedAccounts.map((a) => (
+                        <span
+                          key={a.id}
+                          style={{
+                            fontSize: "11px",
+                            padding: "2px 8px",
+                            background: "#eff6ff",
+                            border: "1px solid #bfdbfe",
+                            borderRadius: "12px",
+                            color: "#1d4ed8",
+                            fontWeight: "600"
+                          }}
+                        >
+                          🚩 {a.name}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <span style={{ fontSize: "11px", color: "#94a3b8" }}>Chưa gán làm mặc định cho Page nào.</span>
+                  )}
                 </div>
-              </div>
-            </article>
-          ))}
+
+                <div style={{ marginTop: "auto", paddingTop: "10px", borderTop: "1px solid #f1f5f9", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontSize: "11px", color: "var(--muted)", display: "flex", alignItems: "center", gap: "4px" }}>
+                    <Settings2 style={{ width: "13px", height: "13px" }} /> {KIND_LABEL[s.kind] || s.kind}
+                  </span>
+
+                  <button
+                    type="button"
+                    className="primary compact"
+                    onClick={() =>
+                      setModal({
+                        type: "job",
+                        initialKind: s.kind,
+                        initialAccountIds: linkedAccounts.map((a) => a.id),
+                      })
+                    }
+                    title="Mở form tạo bài đăng với kịch bản này"
+                  >
+                    <Plus /> Dùng kịch bản này
+                  </button>
+                </div>
+              </article>
+            );
+          })}
         </div>
       ) : (
         <div className="panel">
@@ -2270,17 +2504,26 @@ function PageToolbar({ title, subtitle, action, children }) {
   );
 }
 
-function AccountModal({ extensions, account, defaultExtensionId, close, submit }) {
+function AccountModal({ extensions, account, scripts = [], defaultExtensionId, close, submit }) {
   const [form, setForm] = useState({
     name: account?.name || "",
     facebookId: account?.facebook_id || "",
     extensionId: account?.extension_id || defaultExtensionId || extensions[0]?.id || "",
     accountType: account?.account_type || "page",
     notes: account?.notes || "",
+    assignedFolder: account?.assigned_folder || "",
+    defaultScriptId: account?.default_script_id || "",
     enabled: account?.enabled ?? true,
   });
 
+  const [folders, setFolders] = useState([]);
   const [detecting, setDetecting] = useState(false);
+
+  useEffect(() => {
+    endpoints.media().then((res) => {
+      if (res?.folders) setFolders(res.folders);
+    }).catch(() => {});
+  }, []);
 
   const detectFromTab = async () => {
     if (!form.extensionId) return;
@@ -2304,7 +2547,7 @@ function AccountModal({ extensions, account, defaultExtensionId, close, submit }
   return (
     <Modal
       title={account ? "Chỉnh sửa Fanpage / Tài khoản" : "Thêm Fanpage do Nick Via quản lý"}
-      subtitle="Định tuyến đúng Chrome Profile và Page ID trên Facebook."
+      subtitle="Định tuyến Chrome Profile, gán Thư mục Video và Kịch bản mặc định."
       onClose={close}
     >
       <form
@@ -2368,6 +2611,37 @@ function AccountModal({ extensions, account, defaultExtensionId, close, submit }
           <small>ID của Fanpage (hoặc UID cá nhân nếu muốn đăng lên tường cá nhân).</small>
         </Field>
 
+        <Field label="📁 Thư mục Video/Media gán riêng cho Page này">
+          <select
+            value={form.assignedFolder}
+            onChange={(e) => setForm({ ...form, assignedFolder: e.target.value })}
+          >
+            <option value="">-- Chưa gán (Chọn từ toàn bộ thư viện) --</option>
+            <option value="root">📁 Gốc (Chưa phân loại)</option>
+            {folders.map((f) => (
+              <option key={f.path} value={f.path}>
+                📁 {f.name} ({f.count} file · {f.path})
+              </option>
+            ))}
+          </select>
+          <small>Khi tạo bài đăng cho Page này, hệ thống sẽ ưu tiên gợi ý video từ thư mục này.</small>
+        </Field>
+
+        <Field label="📜 Kịch bản mẫu mặc định">
+          <select
+            value={form.defaultScriptId}
+            onChange={(e) => setForm({ ...form, defaultScriptId: e.target.value })}
+          >
+            <option value="">-- Chưa gán kịch bản mặc định --</option>
+            {scripts.filter((s) => s.enabled).map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name} ({KIND_LABEL[s.kind] || s.kind})
+              </option>
+            ))}
+          </select>
+          <small>Kịch bản sẽ tự động chọn sẵn khi bạn tạo bài đăng mới cho Fanpage này.</small>
+        </Field>
+
         <Field label="Ghi chú phân loại">
           <input
             value={form.notes}
@@ -2425,10 +2699,16 @@ function HashtagPicker({ value, onChange }) {
   );
 }
 
-function MediaPicker({ kind = "video", selected, onSelect }) {
+function MediaPicker({ kind = "video", selected, onSelect, initialFolder }) {
   const [mediaData, setMediaData] = useState({ folders: [], items: [] });
   const [loading, setLoading] = useState(false);
-  const [folderFilter, setFolderFilter] = useState("all");
+  const [folderFilter, setFolderFilter] = useState(initialFolder || "all");
+
+  useEffect(() => {
+    if (initialFolder !== undefined && initialFolder !== "") {
+      setFolderFilter(initialFolder);
+    }
+  }, [initialFolder]);
 
   const fetchMedia = useCallback(async () => {
     setLoading(true);
@@ -2783,10 +3063,15 @@ function JobModal({ accounts, scripts, initialAccount, initialAccountIds, initia
       : enabled[0]
       ? [enabled[0].id]
       : [];
+
+  const firstAcc = accounts.find((a) => defaultAccountIds.includes(a.id));
+  const initScriptId = firstAcc?.default_script_id || scripts.find((s) => s.enabled)?.id || "";
+  const initMode = initialVideoUrl ? "direct" : firstAcc?.default_script_id ? "script" : scripts.some((s) => s.enabled) ? "script" : "direct";
+
   const [form, setForm] = useState({
     accountIds: defaultAccountIds,
-    mode: initialVideoUrl ? "direct" : scripts.some((s) => s.enabled) ? "script" : "direct",
-    scriptId: scripts.find((s) => s.enabled)?.id || "",
+    mode: initMode,
+    scriptId: initScriptId,
     kind: initialKind || "post_reel",
     videoUrl: initialVideoUrl || "",
     caption: "",
@@ -2797,6 +3082,14 @@ function JobModal({ accounts, scripts, initialAccount, initialAccountIds, initia
     scheduled: "",
   });
   const [jsonError, setJsonError] = useState("");
+
+  const selectedAccounts = useMemo(
+    () => accounts.filter((a) => form.accountIds.includes(a.id)),
+    [accounts, form.accountIds]
+  );
+  const primaryAccount = selectedAccounts[0];
+  const assignedFolder = primaryAccount?.assigned_folder;
+  const defaultScript = scripts.find((s) => s.id === primaryAccount?.default_script_id);
 
   const toggle = (id) =>
     setForm((current) => ({
@@ -2913,7 +3206,9 @@ function JobModal({ accounts, scripts, initialAccount, initialAccountIds, initia
                       />
                       <span>
                         <b>{a.name}</b>
-                        <small>ID: {a.facebook_id} {a.notes ? `· ${a.notes}` : ""}</small>
+                        <small>
+                          ID: {a.facebook_id} {a.assigned_folder ? `· 📁 /${a.assigned_folder}` : ""} {a.notes ? `· ${a.notes}` : ""}
+                        </small>
                       </span>
                     </label>
                   ))}
@@ -2921,6 +3216,29 @@ function JobModal({ accounts, scripts, initialAccount, initialAccountIds, initia
               );
             })}
           </div>
+
+          {primaryAccount && (primaryAccount.assigned_folder || primaryAccount.default_script_id) && (
+            <div style={{
+              background: "#f0fdf4",
+              border: "1px solid #bbf7d0",
+              borderRadius: "8px",
+              padding: "8px 12px",
+              marginTop: "8px",
+              display: "flex",
+              flexDirection: "column",
+              gap: "4px",
+              fontSize: "12px",
+              color: "#166534"
+            }}>
+              <div style={{ fontWeight: "700" }}>⚙️ Thiết lập đã gán cho Fanpage "{primaryAccount.name}":</div>
+              {primaryAccount.assigned_folder && (
+                <div>📁 Thư mục video: <b>/{primaryAccount.assigned_folder === "root" ? "Gốc" : primaryAccount.assigned_folder}</b> (Hệ thống đã tự động chọn thư mục này bên dưới)</div>
+              )}
+              {defaultScript && (
+                <div>📜 Kịch bản mẫu mặc định: <b>{defaultScript.name}</b></div>
+              )}
+            </div>
+          )}
         </Field>
 
         <div className="segmented">
@@ -2982,6 +3300,24 @@ function JobModal({ accounts, scripts, initialAccount, initialAccountIds, initia
                 />
                 <MediaPicker
                   kind="video"
+                  initialFolder={assignedFolder}
+                  selected={form.videoUrl}
+                  onSelect={(file) => setForm({ ...form, videoUrl: file })}
+                />
+              </Field>
+            )}
+
+            {form.kind === "post_photos" && (
+              <Field label="File Ảnh (.jpg, .png / media)">
+                <input
+                  required={!form.useJsonOverride}
+                  value={form.videoUrl}
+                  onChange={(e) => setForm({ ...form, videoUrl: e.target.value })}
+                  placeholder="Ví dụ: photo1.jpg hoặc C:/Images/photo1.jpg"
+                />
+                <MediaPicker
+                  kind="photo"
+                  initialFolder={assignedFolder}
                   selected={form.videoUrl}
                   onSelect={(file) => setForm({ ...form, videoUrl: file })}
                 />
