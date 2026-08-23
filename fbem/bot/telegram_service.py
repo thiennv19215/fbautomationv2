@@ -314,9 +314,9 @@ async def _execute_post_photo(chat_id: str, dest_path: Path, caption: str, page_
 
 _MAIN_KEYBOARD = {
     "keyboard": [
-        [{"text": "📊 Trạng thái hệ thống"}, {"text": "📑 Fanpages & Vias"}],
-        [{"text": "👥 Nick Online"}, {"text": "📜 Lịch sử bài đăng"}],
-        [{"text": "❓ Hướng dẫn sử dụng"}],
+        [{"text": "📊 Trạng thái"}, {"text": "📑 Fanpages"}, {"text": "👥 Nick Online"}],
+        [{"text": "🚀 Bật Chrome ngầm"}, {"text": "➕ Thêm / Đổi tên Page"}],
+        [{"text": "📜 Lịch sử bài đăng"}, {"text": "🎯 Mẫu Capture"}, {"text": "❓ Hướng dẫn"}],
     ],
     "resize_keyboard": True,
     "persistent": True,
@@ -394,15 +394,90 @@ async def _handle_update(token: str, update: dict):
             welcome = (
                 "⚡ <b>FBEM STUDIO — TỰ ĐỘNG HÓA FACEBOOK</b>\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
-                "Chào bạn! Bot này giúp bạn đăng Video Reels và Ảnh lên Facebook siêu nhanh ngay trên điện thoại.\n\n"
-                "<b>🚀 CÁCH ĐĂNG BÀI ĐƠN GIẢN:</b>\n"
+                "Chào bạn! Bot này giúp bạn quản lý dàn Via và đăng bài Reels/Ảnh lên Facebook siêu tốc.\n\n"
+                "<b>🚀 CÁCH ĐĂNG BÀI 1-CHẠM:</b>\n"
                 "1️⃣ <b>Gửi Video (.mp4)</b> hoặc <b>Ảnh</b> kèm Caption vào đây.\n"
-                "2️⃣ Bấm chọn <b>Fanpage & Nick Via</b> tương ứng trên màn hình.\n"
-                "3️⃣ Nhận ngay <b>Link bài viết Facebook</b> sau khi đăng xong!\n"
-                "4️⃣ File video trên máy tính sẽ <b>tự động xóa</b> ngay sau khi đăng thành công để giải phóng ổ cứng.\n\n"
-                "<b>⏰ Mẹo Hẹn Giờ:</b> Thêm <code>#schedule 2026-08-23 15:30</code> vào Caption để hẹn giờ đăng."
+                "2️⃣ Bấm chọn <b>Fanpage</b> hoặc <b>Nick Via</b> tương ứng.\n"
+                "3️⃣ Nhận ngay <b>Link bài viết Facebook</b> sau khi đăng xong!\n\n"
+                "<b>⚙️ CÁC LỆNH QUẢN LÝ NHANH:</b>\n"
+                "• <code>/addpage &lt;ID&gt; &lt;Tên&gt;</code> — Lưu Fanpage mới\n"
+                "• <code>/rename &lt;ID&gt; &lt;Tên Mới&gt;</code> — Đổi tên Fanpage\n"
+                "• <code>/delpage &lt;ID&gt;</code> — Xóa Fanpage\n"
+                "• <code>/launch</code> — Kích hoạt dàn Chrome chạy ngầm\n"
+                "• <code>#schedule YYYY-MM-DD HH:MM</code> — Thêm vào Caption để hẹn giờ"
             )
             await send_message(welcome, chat_id=chat_id, reply_markup=_MAIN_KEYBOARD)
+            return
+
+        if lower_text.startswith("/launch") or "bật chrome" in lower_text or "chạy chrome" in lower_text:
+            await send_message("⏳ <b>Đang kích hoạt dàn Profile Chrome chạy ngầm trên máy tính...</b>", chat_id=chat_id)
+            try:
+                from ..bridge.chrome_launcher import launch_all_profiles
+                profs = await asyncio.to_thread(launch_all_profiles)
+                await asyncio.sleep(2)
+                exts = bridge_client.list_extensions()
+                await send_message(
+                    f"🚀 <b>Đã kích hoạt {len(profs)} Profile Chrome ngầm!</b>\n"
+                    f"🟢 Số Nick Via đang kết nối trực tiếp: <b>{len(exts)} Nick</b>\n\n"
+                    "💡 <i>Các Profile phụ đang chạy 100% ẩn ngầm ngoài màn hình.</i>",
+                    chat_id=chat_id,
+                    reply_markup=_MAIN_KEYBOARD,
+                )
+            except Exception as e:
+                await send_message(f"❌ <b>Lỗi bật Chrome:</b> {e}", chat_id=chat_id, reply_markup=_MAIN_KEYBOARD)
+            return
+
+        if "thêm" in lower_text and "page" in lower_text:
+            guide = (
+                "➕ <b>HƯỚNG DẪN QUẢN LÝ FANPAGE TỪ XA:</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "<b>1️⃣ Thêm Fanpage mới:</b>\n"
+                "<code>/addpage &lt;PageID&gt; &lt;Tên Fanpage&gt;</code>\n"
+                "<i>Ví dụ:</i> <code>/addpage 61585679104398 Review Phim Hay</code>\n\n"
+                "<b>2️⃣ Đổi tên Fanpage:</b>\n"
+                "<code>/rename &lt;PageID&gt; &lt;Tên Mới&gt;</code>\n"
+                "<i>Ví dụ:</i> <code>/rename 61585679104398 Tin Tức Nóng 24h</code>\n\n"
+                "<b>3️⃣ Xóa Fanpage:</b>\n"
+                "<code>/delpage &lt;PageID&gt;</code>\n\n"
+                "👉 <i>Bạn chỉ cần copy cú pháp trên và gửi vào đây nhé!</i>"
+            )
+            await send_message(guide, chat_id=chat_id, reply_markup=_MAIN_KEYBOARD)
+            return
+
+        if lower_text.startswith("/delpage") or lower_text.startswith("/xoapage"):
+            parts = text.split(maxsplit=1)
+            if len(parts) < 2:
+                await send_message("⚠️ <b>Cú pháp xóa Page:</b> <code>/delpage &lt;PageID&gt;</code>", chat_id=chat_id, reply_markup=_MAIN_KEYBOARD)
+                return
+            p_id = parts[1].strip()
+            pages_store.delete_page(p_id)
+            await send_message(f"🗑️ <b>Đã xóa Fanpage ID <code>{p_id}</code> thành công!</b>", chat_id=chat_id, reply_markup=_MAIN_KEYBOARD)
+            return
+
+        if lower_text.startswith("/template") or "mẫu" in lower_text:
+            tpl = capture_store.load_template() or {}
+            exts = bridge_client.list_extensions()
+            has_reel = "✅ Đã sẵn sàng" if bool(tpl.get("graphql")) else "⚠️ Chưa có (đăng tay 1 Reel trên FB để lấy)"
+            has_photo = "✅ Đã sẵn sàng" if bool(tpl.get("graphql_photo")) else "⚠️ Chưa có (đăng tay 1 Ảnh trên FB để lấy)"
+            has_switch = "✅ Đã sẵn sàng" if bool((tpl.get("graphql_ops") or {}).get("CometProfileSwitchMutation")) else "⚠️ Chưa có (chuyển profile 1 lần trên FB để lấy)"
+            
+            lines = [
+                "🎯 <b>TÌNH TRẠNG MẪU CAPTURE (GỐC & VIA):</b>",
+                "━━━━━━━━━━━━━━━━━━━━",
+                f"• 🎬 <b>Mẫu Video Reels:</b> {has_reel}",
+                f"• 🖼️ <b>Mẫu Bài viết Ảnh:</b> {has_photo}",
+                f"• 🔄 <b>Mẫu Chuyển Page/Profile:</b> {has_switch}",
+                "",
+                f"👥 <b>Đang kết nối:</b> <b>{len(exts)} Nick Via</b>",
+            ]
+            for i, e in enumerate(exts, 1):
+                e_tpl = capture_store.load_template(e["id"]) or {}
+                e_user = (e.get("fbUser") or {}).get("name") or f"Nick {e['id'][:6]}"
+                r_ok = "✅ Reel" if e_tpl.get("graphql") else "⚪ Reel"
+                p_ok = "✅ Photo" if e_tpl.get("graphql_photo") else "⚪ Photo"
+                lines.append(f"  {i}. 👤 <b>{e_user}</b>: [{r_ok}] [{p_ok}]")
+                
+            await send_message("\n".join(lines), chat_id=chat_id, reply_markup=_MAIN_KEYBOARD)
             return
 
         if lower_text.startswith("/status") or "trạng thái" in lower_text:
@@ -410,8 +485,8 @@ async def _handle_update(token: str, update: dict):
             ext_count = len(exts)
             connected = bridge_client.connected
             tpl = capture_store.load_template() or {}
-            has_reel = "✅ Đã sẵn sàng" if bool(tpl.get("graphql")) else "⚠️ Chưa có mẫu (đăng 1 reel trên FB để lấy)"
-            has_photo = "✅ Đã sẵn sàng" if bool(tpl.get("graphql_photo")) else "⚠️ Chưa có mẫu (đăng 1 ảnh trên FB để lấy)"
+            has_reel = "✅ Đã sẵn sàng" if bool(tpl.get("graphql")) else "⚠️ Chưa có"
+            has_photo = "✅ Đã sẵn sàng" if bool(tpl.get("graphql_photo")) else "⚠️ Chưa có"
             pages = pages_store.list_pages()
 
             # Auto-fetch real Facebook name from open tab if not yet populated
@@ -450,7 +525,7 @@ async def _handle_update(token: str, update: dict):
                     page_lines.append(f"  • 📢 <b>{p['name']}</b> (<code>{p['id']}</code>) — <i>Cầm bởi: {owner_name}</i>")
                 pages_text = "\n".join(page_lines)
             else:
-                pages_text = "  <i>Chưa có Fanpage nào được lưu (vào Web Dashboard để lưu).</i>"
+                pages_text = "  <i>Chưa có Fanpage nào được lưu.</i>"
 
             status_msg = (
                 "⚡ <b>BÁO CÁO HỆ THỐNG FBEM STUDIO</b>\n"
@@ -528,8 +603,38 @@ async def _handle_update(token: str, update: dict):
             for p in pages:
                 owner_ext = p.get("extensionId")
                 owner_name = ext_user_map.get(owner_ext) or ("Tất cả Nick" if not owner_ext else f"Nick {owner_ext[:6]}")
-                lines.append(f"• 📢 <b>{p['name']}</b> (<code>{p['id']}</code>)\n  └ 👤 Quản lý bởi Via: <b>{owner_name}</b>")
+                lines.append(f"• 📢 <b>{p['name']}</b> (ID: <code>{p['id']}</code>)\n  └ 👤 Quản lý: <b>{owner_name}</b>\n  └ ✏️ Đổi tên: <code>/rename {p['id']} Tên_Mới</code>")
             await send_message("📑 <b>DANH SÁCH FANPAGE & NICK QUẢN LÝ:</b>\n━━━━━━━━━━━━━━━━━━━━\n" + "\n\n".join(lines), chat_id=chat_id, reply_markup=_MAIN_KEYBOARD)
+            return
+
+        if lower_text.startswith("/accounts") or lower_text.startswith("/profiles") or "nick" in lower_text or "online" in lower_text:
+            exts = bridge_client.list_extensions()
+            if not exts:
+                await send_message("👥 <b>Chưa có Chrome Profile nào đang kết nối.</b>\nVui lòng mở trình duyệt Chrome đã cài Extension.", chat_id=chat_id, reply_markup=_MAIN_KEYBOARD)
+                return
+            lines = []
+            for e in exts:
+                fb_user = e.get("fbUser") or {}
+                name = fb_user.get("name") or "Nick Facebook"
+                uid = fb_user.get("id") or "Chưa đọc UID"
+                lines.append(f"• 👤 <b>{name}</b> (UID: <code>{uid}</code>)\n  └ Profile ID: <code>{e.get('id', '')[:8]}...</code>")
+            await send_message("👥 <b>DANH SÁCH NICK VIA ĐANG ONLINE:</b>\n━━━━━━━━━━━━━━━━━━━━\n" + "\n\n".join(lines), chat_id=chat_id, reply_markup=_MAIN_KEYBOARD)
+            return
+
+        if lower_text.startswith("/history") or "lịch sử" in lower_text:
+            jobs = history_store.list_jobs(5)
+            if not jobs:
+                await send_message("📜 <b>Chưa có lịch sử bài đăng nào.</b>", chat_id=chat_id, reply_markup=_MAIN_KEYBOARD)
+                return
+            lines = []
+            for j in jobs:
+                st = "✅" if j.get("status") == "succeeded" else "❌"
+                kind = "🎬 Reel" if j.get("kind") == "post_reel" else "🖼️ Ảnh"
+                cap = j.get("caption", "").strip() or "(Không có caption)"
+                if len(cap) > 30: cap = cap[:30] + "..."
+                link = f" → <a href='{j['result']['permalinkUrl']}'>Xem link</a>" if j.get("result", {}).get("permalinkUrl") else ""
+                lines.append(f"{st} <b>{kind}:</b> {cap}{link}")
+            await send_message("📜 <b>5 BÀI ĐĂNG GẦN NHẤT:</b>\n━━━━━━━━━━━━━━━━━━━━\n" + "\n".join(lines), chat_id=chat_id, reply_markup=_MAIN_KEYBOARD)
             return
 
         if lower_text.startswith("/accounts") or lower_text.startswith("/profiles") or "nick" in lower_text or "online" in lower_text:
