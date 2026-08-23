@@ -49,7 +49,7 @@ async function getOrCreateExtensionId() {
 // no_facebook_tab. Prefers the FOCUSED window's active FB tab (so a switch_profile
 // in one window isn't undone by posting via a different window's tab), then any
 // active FB tab, then any FB tab.
-async function findFbTab(attempts = 4, delayMs = 1500) {
+async function findFbTab(attempts = 3, delayMs = 1500) {
   for (let i = 0; i < attempts; i++) {
     try {
       const focused = await chrome.tabs.query({ url: FB_TAB_URLS, active: true, lastFocusedWindow: true });
@@ -60,6 +60,16 @@ async function findFbTab(attempts = 4, delayMs = 1500) {
       if (any.length) return any[0];
     } catch (e) {
       console.warn('[FBBridge] tab query failed:', e?.message || e);
+    }
+    // Auto-open a background facebook.com tab if none exists in this profile
+    if (i === 0) {
+      try {
+        const newTab = await chrome.tabs.create({ url: 'https://www.facebook.com/', active: false });
+        if (newTab) {
+          await new Promise((r) => setTimeout(r, 4000));
+          return newTab;
+        }
+      } catch (_) {}
     }
     if (i < attempts - 1) await new Promise((r) => setTimeout(r, delayMs));
   }
