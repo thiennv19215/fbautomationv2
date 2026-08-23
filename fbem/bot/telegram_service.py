@@ -191,6 +191,11 @@ async def _download_telegram_file(token: str, file_id: str, ext: str) -> Optiona
 
 
 async def _execute_post_reel(chat_id: str, dest_path: Path, caption: str, page_id: Optional[str] = None, ext_id: Optional[str] = None):
+    if page_id and (not ext_id or ext_id == "default"):
+        p_info = pages_store.get_page(page_id)
+        if p_info and p_info.get("extensionId"):
+            ext_id = p_info["extensionId"]
+
     await send_message("⏳ <b>Đang đẩy Video Reel lên Facebook...</b>\n<i>Vui lòng đợi vài giây để hệ thống xuất bản.</i>", chat_id=chat_id)
     template = capture_store.load_template(ext_id)
     if not capture_store.template_complete(template):
@@ -247,6 +252,11 @@ async def _execute_post_reel(chat_id: str, dest_path: Path, caption: str, page_i
 
 
 async def _execute_post_photo(chat_id: str, dest_path: Path, caption: str, page_id: Optional[str] = None, ext_id: Optional[str] = None):
+    if page_id and (not ext_id or ext_id == "default"):
+        p_info = pages_store.get_page(page_id)
+        if p_info and p_info.get("extensionId"):
+            ext_id = p_info["extensionId"]
+
     await send_message("⏳ <b>Đang đẩy Ảnh lên Facebook...</b>\n<i>Vui lòng đợi vài giây để hệ thống xuất bản.</i>", chat_id=chat_id)
     template = capture_store.load_template(ext_id)
     if not capture_store.photo_template_complete(template):
@@ -574,23 +584,21 @@ async def _handle_update(token: str, update: dict):
             _pending_media[media_key] = {"kind": "video", "path": dest, "caption": caption}
             inline_keyboard = []
 
-            # 1. Add buttons for Fanpages with Via owner label
+            # 1. Add buttons for Fanpages (clean, 1-click auto routing)
             for p in pages:
-                owner_ext = p.get("extensionId")
-                via_name = ext_user_map.get(owner_ext, "Mặc định") if owner_ext else "Auto Via"
-                inline_keyboard.append([{"text": f"📢 {p['name']} (Via: {via_name})", "callback_data": f"post:{media_key}:{p['id']}:{owner_ext or 'default'}"}])
+                inline_keyboard.append([{"text": f"📢 {p['name']}", "callback_data": f"post:{media_key}:{p['id']}:{p.get('extensionId') or 'default'}"}])
 
             # 2. Add buttons for personal profiles
             for e in exts:
                 uname = (e.get("fbUser") or {}).get("name") or f"Nick {e['id'][:6]}"
-                inline_keyboard.append([{"text": f"👤 Đăng Nick cá nhân: {uname}", "callback_data": f"post:{media_key}:default:{e['id']}"}])
+                inline_keyboard.append([{"text": f"👤 Nick cá nhân: {uname}", "callback_data": f"post:{media_key}:default:{e['id']}"}])
 
             inline_keyboard.append([{"text": "❌ Hủy bỏ", "callback_data": "cancel"}])
             markup = {"inline_keyboard": inline_keyboard}
 
             cap_preview = f"\n📝 <b>Caption:</b> <i>{caption}</i>" if caption else ""
             await send_message(
-                f"🎯 <b>CHỌN NƠI ĐĂNG VIDEO:</b>{cap_preview}\n\n<i>Bấm nút bên dưới để chọn Trang & Nick Via tương ứng:</i>",
+                f"🎯 <b>CHỌN NƠI ĐĂNG VIDEO:</b>{cap_preview}\n\n<i>Bấm chọn Trang hoặc Nick để xuất bản ngay:</i>",
                 chat_id=chat_id,
                 reply_markup=markup,
             )
@@ -609,30 +617,24 @@ async def _handle_update(token: str, update: dict):
 
             pages = pages_store.list_pages()
             exts = bridge_client.list_extensions()
-            ext_user_map = {}
-            for e in exts:
-                uname = (e.get("fbUser") or {}).get("name") or f"Nick {e['id'][:6]}"
-                ext_user_map[e["id"]] = uname
 
             media_key = f"img_{int(time.time())}"
             _pending_media[media_key] = {"kind": "photo", "path": dest, "caption": caption}
             inline_keyboard = []
 
             for p in pages:
-                owner_ext = p.get("extensionId")
-                via_name = ext_user_map.get(owner_ext, "Mặc định") if owner_ext else "Auto Via"
-                inline_keyboard.append([{"text": f"📢 {p['name']} (Via: {via_name})", "callback_data": f"post:{media_key}:{p['id']}:{owner_ext or 'default'}"}])
+                inline_keyboard.append([{"text": f"📢 {p['name']}", "callback_data": f"post:{media_key}:{p['id']}:{p.get('extensionId') or 'default'}"}])
 
             for e in exts:
                 uname = (e.get("fbUser") or {}).get("name") or f"Nick {e['id'][:6]}"
-                inline_keyboard.append([{"text": f"👤 Đăng Nick cá nhân: {uname}", "callback_data": f"post:{media_key}:default:{e['id']}"}])
+                inline_keyboard.append([{"text": f"👤 Nick cá nhân: {uname}", "callback_data": f"post:{media_key}:default:{e['id']}"}])
 
             inline_keyboard.append([{"text": "❌ Hủy bỏ", "callback_data": "cancel"}])
             markup = {"inline_keyboard": inline_keyboard}
 
             cap_preview = f"\n📝 <b>Caption:</b> <i>{caption}</i>" if caption else ""
             await send_message(
-                f"🎯 <b>CHỌN NƠI ĐĂNG ẢNH:</b>{cap_preview}\n\n<i>Bấm nút bên dưới để chọn Trang & Nick Via tương ứng:</i>",
+                f"🎯 <b>CHỌN NƠI ĐĂNG ẢNH:</b>{cap_preview}\n\n<i>Bấm chọn Trang hoặc Nick để xuất bản ngay:</i>",
                 chat_id=chat_id,
                 reply_markup=markup,
             )

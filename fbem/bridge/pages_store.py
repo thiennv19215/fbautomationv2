@@ -40,6 +40,15 @@ def list_pages() -> list[dict]:
     return _ensure_store()
 
 
+def get_page(page_id: str) -> Optional[dict]:
+    pages = _ensure_store()
+    page_id_str = str(page_id).strip()
+    for p in pages:
+        if p.get("id") == page_id_str:
+            return p
+    return None
+
+
 def save_page(page_id: str, name: str, extension_id: Optional[str] = None, note: str = "") -> dict:
     pages = _ensure_store()
     page_id_str = str(page_id).strip()
