@@ -190,6 +190,27 @@ async def _download_telegram_file(token: str, file_id: str, ext: str) -> Optiona
     return None
 
 
+async def _download_direct_url(url: str, ext: str = ".mp4") -> Optional[Path]:
+    """Download video from a direct URL (no 20MB limit!)."""
+    try:
+        out_dir = media_dir()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"url_{int(time.time())}_{abs(hash(url)) % 100000}{ext}"
+        dest = out_dir / filename
+
+        async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+            async with client.stream("GET", url) as response:
+                if response.status_code != 200:
+                    return None
+                with open(dest, "wb") as f:
+                    async for chunk in response.aiter_bytes(chunk_size=65536):
+                        f.write(chunk)
+        return dest
+    except Exception as exc:
+        logger.error("failed to download direct URL %s: %s", url, exc)
+        return None
+
+
 async def _execute_post_reel(chat_id: str, dest_path: Path, caption: str, page_id: Optional[str] = None, ext_id: Optional[str] = None):
     if page_id and (not ext_id or ext_id == "default"):
         p_info = pages_store.get_page(page_id)
@@ -666,6 +687,49 @@ async def _handle_update(token: str, update: dict):
                 lines.append(f"{st} <b>{kind}:</b> {cap}{link}")
             await send_message("📜 <b>5 BÀI ĐĂNG GẦN NHẤT:</b>\n━━━━━━━━━━━━━━━━━━━━\n" + "\n".join(lines), chat_id=chat_id, reply_markup=_MAIN_KEYBOARD)
             return
+
+        # Handle Text with Video URL or Local File Path
+        if text and not text.startswith("/"):
+            import re
+            url_match = re.search(r"https?://[^\s]+\.(?:mp4|mov|avi|webm)(?:\?[^\s]*)?", text, re.IGNORECASE) or re.search(r"https?://[^\s]+", text)
+            local_path_match = re.search(r"[a-zA-Z]:\\[^\r\n]+\.mp4", text, re.IGNORECASE) or re.search(r"/[^\r\n]+\.mp4", text, re.IGNORECASE)
+            
+            dest = None
+            extracted_caption = text
+
+            if local_path_match and Path(local_path_match.group(0)).exists():
+                local_file = Path(local_path_match.group(0))
+                dest = local_file
+                extracted_caption = text.replace(local_path_match.group(0), "").strip()
+                await send_message(f"📁 <i>Đã nhận file từ máy tính: {dest.name}</i>", chat_id=chat_id)
+            elif url_match and ("http://" in url_match.group(0) or "https://" in url_match.group(0)) and not ("facebook.com" in url_match.group(0) or "t.me" in url_match.group(0)):
+                video_url = url_match.group(0)
+                extracted_caption = text.replace(video_url, "").strip()
+                await send_message("🌐 <i>Đang tải Video trực tiếp từ Link (không giới hạn 20MB)...</i>", chat_id=chat_id)
+                dest = await _download_direct_url(video_url, ".mp4")
+                if not dest:
+                    await send_message("❌ Không thể tải video từ đường dẫn này. Vui lòng kiểm tra lại link trực tiếp!", chat_id=chat_id)
+
+            if dest:
+                pages = pages_store.list_pages()
+                exts = bridge_client.list_extensions()
+                media_key = f"vid_{int(time.time())}"
+                _pending_media[media_key] = {"kind": "video", "path": dest, "caption": extracted_caption or caption}
+                inline_keyboard = []
+                for p in pages:
+                    inline_keyboard.append([{"text": f"📢 {p['name']}", "callback_data": f"post:{media_key}:{p['id']}:{p.get('extensionId') or 'default'}"}])
+                for e in exts:
+                    uname = (e.get("fbUser") or {}).get("name") or f"Nick {e['id'][:6]}"
+                    inline_keyboard.append([{"text": f"👤 Nick cá nhân: {uname}", "callback_data": f"post:{media_key}:default:{e['id']}"}])
+                inline_keyboard.append([{"text": "❌ Hủy bỏ", "callback_data": "cancel"}])
+                
+                cap_preview = f"\n📝 <b>Caption:</b> <i>{extracted_caption[:80]}...</i>" if extracted_caption else ""
+                await send_message(
+                    f"🎯 <b>CHỌN NƠI ĐĂNG VIDEO:</b>{cap_preview}\n\n<i>Bấm chọn Trang hoặc Nick để xuất bản ngay:</i>",
+                    chat_id=chat_id,
+                    reply_markup={"inline_keyboard": inline_keyboard},
+                )
+                return
 
         # Handle Media: Video
         video = msg.get("video") or msg.get("animation") or (msg.get("document") if msg.get("document", {}).get("mime_type", "").startswith("video/") else None)
