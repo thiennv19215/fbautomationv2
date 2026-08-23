@@ -1,12 +1,11 @@
-"""Desktop Application Entrypoint for FBEM Studio (Windows .exe Packaging)."""
+"""Desktop Application Entrypoint for FBEM Studio (Windows Native Window & System Fallback)."""
 from __future__ import annotations
 
-import asyncio
 import os
 import sys
 import time
-import webbrowser
 import threading
+import subprocess
 from pathlib import Path
 
 # Ensure package root is in sys.path when running frozen or direct
@@ -21,45 +20,56 @@ from fbem.bridge.config import HTTP_PORT
 from fbem.bridge.chrome_launcher import launch_all_profiles
 
 
-def _open_dashboard_delayed() -> None:
-    """Open Dashboard in default browser once the server is listening."""
-    time.sleep(1.8)
-    try:
-        webbrowser.open(f"http://127.0.0.1:{HTTP_PORT}/")
-    except Exception:
-        pass
+def run_uvicorn_server() -> None:
+    """Run the FastAPI backend server in a dedicated thread."""
+    from fbem.bridge.server import app
+    config = uvicorn.Config(app, host="127.0.0.1", port=HTTP_PORT, log_level="warning")
+    server = uvicorn.Server(config)
+    server.run()
 
 
 def main() -> None:
-    print("=" * 60)
-    print("      ⚡ FBEM STUDIO — FACEBOOK AUTOMATION BRIDGE")
-    print("=" * 60)
-    print()
-    print(f"[*] Starting local server on http://127.0.0.1:{HTTP_PORT}/")
-    print("[*] Telegram Bot and Queue Dispatcher initialized.")
-    print("[*] Chrome Extension WebSocket on ws://127.0.0.1:9224")
-    print()
-
-    # Launch Chrome profiles in background if Chrome is installed
+    # 1. Launch background Chrome profiles if any
     try:
-        profs = launch_all_profiles()
-        if profs:
-            print(f"[+] Launched {len(profs)} background Chrome profile(s).")
-    except Exception as err:
-        print(f"[!] Note: Chrome auto-launch skipped ({err})")
+        launch_all_profiles()
+    except Exception:
+        pass
 
-    # Start browser opener thread
-    threading.Thread(target=_open_dashboard_delayed, daemon=True).start()
+    # 2. Start Uvicorn server thread
+    server_thread = threading.Thread(target=run_uvicorn_server, daemon=True)
+    server_thread.start()
 
-    print("[+] Opening Dashboard at http://127.0.0.1:47102/ ...")
-    print("=" * 60)
-    print("Running... (Close this window or press CTRL+C to stop)")
-    print("=" * 60)
-    print()
+    # 3. Give server a moment to bind
+    time.sleep(1.2)
 
-    # Run Uvicorn directly with app object to prevent multiprocessing reload issues in frozen .exe
-    from fbem.bridge.server import app
-    uvicorn.run(app, host="127.0.0.1", port=HTTP_PORT, log_level="info")
+    dashboard_url = f"http://127.0.0.1:{HTTP_PORT}/"
+
+    # 4. Open native desktop window using pywebview (Edge WebView2)
+    #    If not supported or fails, fallback to opening system default browser.
+    try:
+        import webview
+        window = webview.create_window(
+            title="⚡ FBEM Studio — Facebook Automation Dashboard",
+            url=dashboard_url,
+            width=1360,
+            height=880,
+            min_size=(1020, 680),
+        )
+        webview.start()
+    except Exception as exc:
+        print(f"[!] PyWebView window unavailable ({exc}), opening default browser...")
+        try:
+            subprocess.Popen(f'start "" "{dashboard_url}"', shell=True)
+        except Exception:
+            import webbrowser
+            webbrowser.open(dashboard_url)
+
+        # Keep server running in console mode
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
 
 
 if __name__ == "__main__":
