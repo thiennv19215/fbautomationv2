@@ -14,6 +14,8 @@
  *   2. REPLAY: agent sends {method:"post_reel"} → forwarded to a facebook.com
  *      tab → content/injected scripts reproduce the native upload → result
  *      relayed back to the agent.
+ */
+
 // ─── Server & WebSocket configuration ───────────────────────
 let SERVER_BASE_URL = 'https://fb.shopcongngheso5.io.vn';
 
@@ -41,7 +43,7 @@ let callbackSecret   = null; // Auth secret received from agent on WS connect
 let manualDisconnect = false;
 let postInFlight     = 0;    // active post/switch count; pauses the periodic tab reload
 
-let extensionId     = null; // Persistent ID per Chrome Profile
+let extensionId      = 'ext-' + Math.random().toString(36).slice(2, 11); // Fallback ID until loaded from storage
 
 // ─── Facebook tab matchers ──────────────────────────────────
 
@@ -153,6 +155,7 @@ function connectToAgent() {
   if (ws?.readyState === WebSocket.OPEN) return;
 
   try {
+    console.log('[FBBridge] Attempting WS connection to:', AGENT_WS_URL);
     ws = new WebSocket(AGENT_WS_URL);
   } catch (e) {
     console.error('[FBBridge] WS connect error:', e);
