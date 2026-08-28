@@ -41,7 +41,6 @@ from fastapi import FastAPI, Header, HTTPException, UploadFile, File, Form
 from fastapi import Request as FastAPIRequest
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 
 from . import admin_store
@@ -128,23 +127,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-import sys
-
-def _get_static_dir() -> Path:
-    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
-        bundled = Path(sys._MEIPASS) / "fbem" / "bridge" / "static"
-        if bundled.exists():
-            return bundled
-    return Path(__file__).parent / "static"
-
-_STATIC_DIR = _get_static_dir()
-_STATIC_DIR.mkdir(parents=True, exist_ok=True)
-app.mount("/ui", StaticFiles(directory=_STATIC_DIR, html=True), name="dashboard")
-
-
-@app.get("/", include_in_schema=False)
-def root_redirect():
-    return RedirectResponse("/ui/")
+@app.get("/", tags=["status"])
+def root_status():
+    return {
+        "status": "ok",
+        "service": "fbem-bridge",
+        "version": "0.1.0",
+        "mode": "headless",
+        "docs": "/docs",
+    }
 
 
 class PostReelBody(BaseModel):

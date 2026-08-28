@@ -8,7 +8,9 @@
     "https://*.facebook.com/*",
     "https://web.facebook.com/*",
     "http://127.0.0.1:47102/*",
-    "http://localhost:47102/*"
+    "http://localhost:47102/*",
+    "https://*/*",
+    "http://*/*"
   ],
   "background": {
     "service_worker": "background.js"

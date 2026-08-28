@@ -1,30 +1,20 @@
 @echo off
-title FBEM Studio - Facebook Automation
+title FBEM Bridge - Headless Facebook Automation Daemon
 chcp 65001 > nul
 cls
 
 echo =======================================================
-echo          ⚡ FBEM STUDIO - FACEBOOK AUTOMATION
+echo     ⚡ FBEM BRIDGE - HEADLESS FACEBOOK AUTOMATION
 echo =======================================================
 echo.
 
-echo [*] Đang dọn dẹp và giải phóng các cổng kết nối cũ (:47102 & :9224)...
+echo [*] Đang dọn dẹp và giải phóng các cổng kết nối cũ (:47102 ^& :9224)...
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr :47102 ^| findstr LISTENING 2^>nul') do (
     taskkill /PID %%a /F /T >nul 2>&1
 )
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr :9224 ^| findstr LISTENING 2^>nul') do (
     taskkill /PID %%a /F /T >nul 2>&1
 )
-
-:: Check if Electron is installed and ready
-if exist "node_modules\electron" (
-    echo [*] Đang khởi động FBEM Studio qua Electron Desktop App...
-    npm start
-    if %ERRORLEVEL% equ 0 exit /b 0
-)
-
-:: Fallback to Python Desktop / Browser
-echo [*] Electron chưa sẵn sàng, đang chuyển sang Python Native App...
 
 set "PY_CMD="
 if exist ".venv\Scripts\python.exe" (
@@ -49,12 +39,11 @@ if "%PY_CMD%"=="" (
     exit /b 1
 )
 
-%PY_CMD% fbem_app.py
+echo [*] Khởi động FBEM Bridge Daemon (HTTP API :47102 ^| WebSocket :9224)...
+%PY_CMD% -m fbem.bridge
 
 if %ERRORLEVEL% neq 0 (
     echo.
-    echo [!] Ứng dụng đã thoát với mã lỗi %ERRORLEVEL%.
+    echo [!] Server đã dừng với mã lỗi %ERRORLEVEL%.
     pause
 )
-
-

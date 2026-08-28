@@ -14,11 +14,29 @@
  *   2. REPLAY: agent sends {method:"post_reel"} → forwarded to a facebook.com
  *      tab → content/injected scripts reproduce the native upload → result
  *      relayed back to the agent.
- */
+// ─── Server & WebSocket configuration ───────────────────────
+// Set your Cloudflare domain here (e.g. 'https://fbem.yourdomain.com')
+// or leave default for local testing ('http://127.0.0.1:47102').
+let SERVER_BASE_URL = 'http://127.0.0.1:47102';
 
-const AGENT_WS_URL = 'ws://127.0.0.1:9224';
-const CALLBACK_URL = 'http://127.0.0.1:47102/api/ext/callback';
-const CAPTURE_URL  = 'http://127.0.0.1:47102/api/ext/capture';
+let AGENT_WS_URL = 'ws://127.0.0.1:9224';
+let CALLBACK_URL = `${SERVER_BASE_URL}/api/ext/callback`;
+let CAPTURE_URL  = `${SERVER_BASE_URL}/api/ext/capture`;
+
+function configureEndpoints(baseUrl) {
+  if (!baseUrl) return;
+  SERVER_BASE_URL = baseUrl.replace(/\/+$/, '');
+  if (SERVER_BASE_URL.startsWith('https://')) {
+    AGENT_WS_URL = SERVER_BASE_URL.replace(/^https:/, 'wss:') + '/ws';
+  } else if (SERVER_BASE_URL.startsWith('http://') && !SERVER_BASE_URL.includes('127.0.0.1') && !SERVER_BASE_URL.includes('localhost')) {
+    AGENT_WS_URL = SERVER_BASE_URL.replace(/^http:/, 'ws:') + '/ws';
+  } else {
+    AGENT_WS_URL = 'ws://127.0.0.1:9224';
+  }
+  CALLBACK_URL = `${SERVER_BASE_URL}/api/ext/callback`;
+  CAPTURE_URL  = `${SERVER_BASE_URL}/api/ext/capture`;
+  console.log('[FBBridge] Endpoints configured:', { SERVER_BASE_URL, AGENT_WS_URL, CALLBACK_URL, CAPTURE_URL });
+}
 
 let ws               = null;
 let callbackSecret   = null; // Auth secret received from agent on WS connect
@@ -93,7 +111,8 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 async function init() {
-  const data = await chrome.storage.local.get(['callbackSecret', 'extensionId']);
+  const data = await chrome.storage.local.get(['callbackSecret', 'extensionId', 'serverUrl']);
+  if (data.serverUrl) configureEndpoints(data.serverUrl);
   if (data.callbackSecret) callbackSecret = data.callbackSecret;
   if (data.extensionId) {
     extensionId = data.extensionId;

@@ -1,6 +1,8 @@
-# 📖 HƯỚNG DẪN SỬ DỤNG HỆ THỐNG FBEM (Facebook Automation & MCP)
+# 📖 HƯỚNG DẪN SỬ DỤNG HỆ THỐNG FBEM (Headless Facebook Bridge & MCP)
 
 Chào mừng bạn đến với **FBEM** — Hệ thống tự động hóa đăng bài (Reels, Ảnh/Album), quản lý đa tài khoản Facebook (Via) & Fanpage theo cơ chế **Capture & Replay** mô phỏng 100% thao tác người dùng thật (Native Web API), không bị bóp tương tác như Graph API thông thường.
+
+Hệ thống hoạt động dưới dạng **Headless Daemon** được điều khiển hoàn toàn bởi **AI Agent thông qua giao thức MCP (Model Context Protocol)**.
 
 ---
 
@@ -9,55 +11,40 @@ Chào mừng bạn đến với **FBEM** — Hệ thống tự động hóa đă
 2. [Cài đặt & Khởi động nhanh](#2-cài-đặt--khởi-động-nhanh)
 3. [Cài đặt Chrome Extension](#3-cài-đặt-chrome-extension)
 4. [Nguyên lý hoạt động (Capture & Replay)](#4-nguyên-lý-hoạt-động-capture--replay)
-5. [Hướng dẫn sử dụng Giao diện Web (Dashboard)](#5-hướng-dẫn-sử-dụng-giao-diện-web-dashboard)
-   - [5.1 Quản lý Tài khoản & Fanpage](#51-quản-lý-tài-khoản--fanpage)
-   - [5.2 Quản lý Kho Media (Media Library)](#52-quản-lý-kho-media-media-library)
-   - [5.3 Đăng bài & Lên lịch (Post & Schedule)](#53-đăng-bài--lên-lịch-post--schedule)
-   - [5.4 Quản lý Hàng đợi & Lịch sử (Jobs Queue)](#54-quản-lý-hàng-đợi--lịch-sử-jobs-queue)
-   - [5.5 Quản lý Chrome Extension](#55-quản-lý-chrome-extension)
-6. [Tích hợp AI Agent qua MCP (Claude Desktop, Cursor, Claude Code)](#6-tích-hợp-ai-agent-qua-mcp)
+5. [Tích hợp & Điều khiển bằng AI Agent qua MCP](#5-tích-hợp--điều-khiển-bằng-ai-agent-qua-mcp)
+6. [Các MCP Tools có sẵn](#6-các-mcp-tools-có-sẵn)
 7. [Các câu hỏi thường gặp & Xử lý sự cố (Troubleshooting)](#7-các-câu-hỏi-thường-gặp--xử-lý-sự-cố)
 
 ---
 
 ## 1. Yêu cầu hệ thống
-- **Hệ điều hành**: Windows, macOS hoặc Linux.
-- **Python**: Phiên bản `>= 3.10` (Khuyên dùng `uv` hoặc `venv`).
-- **Node.js**: Phiên bản `>= 18` (để phát triển hoặc build frontend nếu cần).
-- **Trình duyệt**: Google Chrome, Brave, CocCoc, hoặc Microsoft Edge.
+- **Hệ điều hành**: Linux VPS, Windows hoặc macOS.
+- **Python**: Phiên bản `>= 3.11` (Khuyên dùng `uv`).
+- **Trình duyệt**: Google Chrome hoặc Brave / Microsoft Edge (để cài Chrome Extension và mở Facebook).
 
 ---
 
 ## 2. Cài đặt & Khởi động nhanh
 
-### Bước 1: Tải mã nguồn về máy
+### Bước 1: Tạo môi trường và cài đặt dependencies
 ```bash
-git clone https://github.com/thiennv19215/fbautomationv2.git fbem
-cd fbem
-```
-
-### Bước 2: Tạo môi trường ảo và cài đặt thư viện Python
-Sử dụng `uv` (khuyên dùng vì tốc độ cực nhanh):
-```bash
-# Cài uv nếu chưa có: pip install uv
 uv venv
 # Kích hoạt môi trường ảo:
-# Trên Windows PowerShell:
-.venv\Scripts\activate
-# Trên Linux/macOS:
-source .venv/bin/activate
+# Windows: .venv\Scripts\activate
+# Linux/macOS: source .venv/bin/activate
 
-# Cài đặt dependencies:
 uv pip install -e .
 ```
-*(Hoặc dùng `pip install -e .` nếu dùng python venv thông thường)*
 
-### Bước 3: Khởi động Server Bridge (Backend + Dashboard)
+### Bước 2: Khởi động Server Bridge (Headless Daemon)
 ```bash
 python -m fbem.bridge
+# Hoặc trên Windows:
+start.bat
 ```
-> Khi server chạy thành công, bạn sẽ thấy thông báo:
-> - **API & Dashboard URL**: `http://127.0.0.1:47102/ui/`
+> Khi server chạy thành công:
+> - **REST API**: `http://127.0.0.1:47102` (Swagger Docs tại `/docs`)
+> - **Extension WebSocket**: `ws://127.0.0.1:9224`
 > - **WebSocket Extension Port**: `ws://127.0.0.1:9224/ws`
 
 👉 Truy cập vào trình duyệt: **[http://127.0.0.1:47102/ui/](http://127.0.0.1:47102/ui/)** để mở giao diện quản trị.
@@ -95,90 +82,60 @@ FBEM sử dụng kỹ thuật **Passive Sniffing & Native Replay**:
 
 ---
 
-## 5. Hướng dẫn sử dụng Giao diện Web (Dashboard)
+## 5. Tích hợp & Điều khiển bằng AI Agent qua MCP
 
-Giao diện Dashboard tại `http://127.0.0.1:47102/ui/` bao gồm 6 phân hệ chính:
+FBEM đi kèm một **MCP Server** (`Model Context Protocol`) chuẩn, cho phép các AI Agent như **Claude Desktop**, **Claude Code**, **Cursor**, **Antigravity**, **Cline** điều khiển 100% các tính năng của hệ thống.
 
-### 5.1 📊 Dashboard (Tổng quan)
-- Hiển thị thống kê nhanh: Số lượng Via đang online, Tổng số Fanpage, Trạng thái các Jobs đang chạy, Dung lượng kho media.
-- Biểu đồ tỷ lệ thành công theo thời gian thực.
+### Cấu hình Agent (`claude_desktop_config.json` hoặc Cursor MCP settings):
 
-### 5.2 📑 Fanpages & Accounts (Quản lý Fanpage & Tài khoản)
-- **Tự động quét**: Khi Extension kết nối vào tài khoản Facebook, hệ thống tự động quét toàn bộ Fanpage mà Via đó đang quản lý và nhập vào danh sách.
-- **Chế độ xem**:
-  - **Dạng bảng (Table view)**: Tìm kiếm, lọc theo Niche/Category/Via, đổi tên, chỉnh sửa danh mục hoặc ghi chú.
-  - **Gom nhóm theo Via (Grouped by Account)**: Xem từng nick Facebook đang nắm giữ những Page nào.
-- **Thao tác hàng loạt (Bulk Actions)**: Chọn nhiều Fanpage cùng lúc để tạo bài đăng đồng loạt hoặc gắn nhãn.
-- **Chuyển Profile**: Bấm nút chuyển trang nhanh để extension tự động switch ngữ cảnh sang Page đó.
-
-### 5.3 📁 Media Library (Kho quản lý Media)
-- **Tạo thư mục**: Phân loại media theo chiến dịch (ví dụ: `Reels_Hai_Huoc`, `Review_Phim`, `Product_Ads`).
-- **Upload file**: Hỗ trợ tải lên video (`.mp4`, `.mov`) và hình ảnh (`.jpg`, `.png`).
-- **Xem trước trực tiếp (Preview)**: Bấm vào video/ảnh để phát thử trực tiếp ngay trên Dashboard.
-- **Tự động dọn dẹp (Auto-cleanup)**: Khi bài đăng thành công, hệ thống có thể tự động xóa file để tiết kiệm dung lượng ổ cứng.
-
-### 5.4 ✍️ Post & Schedule (Đăng bài & Lên lịch)
-1. **Chọn Fanpage đích**: Chọn 1 hoặc nhiều Fanpage cần đăng.
-2. **Soạn nội dung (Caption)**: Hỗ trợ chèn biến linh hoạt như `{{account_name}}`, `{{date}}`.
-3. **Bộ chọn Hashtag thông minh**: Bấm vào các hashtag gợi ý sẵn (`#reels`, `#viral`, `#trending`,...) để tự động nối vào caption.
-4. **Chọn Media**: Chọn video/ảnh từ Kho Media hoặc tải lên file mới.
-5. **Hình thức đăng**:
-   - **Đăng ngay (Publish Now)**: Đưa vào hàng đợi và chạy lập tức.
-   - **Lên lịch (Schedule)**: Chọn ngày giờ cụ thể để hệ thống tự động đăng đúng hẹn.
-
-### 5.5 ⏳ Jobs & Queue (Tiến trình & Hàng đợi)
-- Theo dõi toàn bộ lịch sử đăng bài với các trạng thái: `pending`, `running`, `success`, `failed`.
-- Xem log chi tiết từng bước (Step-by-step: lấy token -> upload chunk -> publish story).
-- Hỗ trợ nút **Hủy (Cancel)** hoặc **Thử lại (Retry)** cho các tác vụ thất bại.
-
-### 5.6 🔌 Extensions (Quản lý kết nối)
-- Hiển thị danh sách các Chrome Extension đang kết nối.
-- Xem UID Facebook, tên hiển thị, avatar, và trạng thái template capture của từng profile.
-
----
-
-## 6. Tích hợp AI Agent qua MCP
-
-FBEM đi kèm một **MCP Server** (`Model Context Protocol`) chuẩn, cho phép các AI Agent như **Claude Desktop**, **Claude Code**, **Cursor**, **Antigravity** điều khiển trực tiếp việc đăng bài.
-
-### Cấu hình `claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
     "fbem": {
-      "command": "python",
-      "args": ["-m", "fbem.mcp"]
+      "command": "uv",
+      "args": ["run", "fbem-mcp"],
+      "env": {
+        "FBEM_BRIDGE_URL": "http://127.0.0.1:47102"
+      }
     }
   }
 }
 ```
+*(Nếu server bridge chạy trên VPS từ xa, đặt `FBEM_BRIDGE_URL` thành domain VPS của bạn, ví dụ `https://fbem.yourdomain.com`).*
 
-### Các công cụ AI (MCP Tools) hỗ trợ:
-- `post_reel(media_path, caption, target_page_id)`: Đăng 1 video Reels lên Facebook/Fanpage.
-- `post_photos(media_paths, caption, target_page_id)`: Đăng 1 hoặc nhiều ảnh kèm bài viết.
-- `switch_profile(target_id)`: Chuyển ngữ cảnh quản trị sang Page khác.
-- `get_identity()`: Lấy thông tin tài khoản Facebook đang đăng nhập hiện tại.
-- `capture_status()`: Kiểm tra trạng thái đã có template upload hay chưa.
-- `health()`: Kiểm tra kết nối giữa Agent -> Bridge -> Extension.
+---
+
+## 6. Các MCP Tools có sẵn cho AI Agent
+
+| Nhóm | MCP Tool | Mô tả |
+| :--- | :--- | :--- |
+| **Kiểm tra trạng thái** | `health(extension_id?)` | Kiểm tra kết nối bridge, extension nào đang active, tab TTL. |
+| | `capture_status(extension_id?)` | Xem mẫu upload Reels/Photos đã được ghi nhận chưa. |
+| | `get_stats()` | Lấy thống kê số lượng accounts, số job đang đợi, đang chạy, thành công. |
+| **Tài khoản & Fanpage** | `get_identity(extension_id?)` | Lấy danh tính (User / Page) của tab Facebook đang mở. |
+| | `list_pages(extension_id?)` | Xem danh sách các Fanpage mà extension đã phát hiện. |
+| | `list_accounts(extension_id?)` | Xem danh sách các account / page được cấu hình trong database. |
+| | `switch_profile(target_id, extension_id?)` | Chuyển ngữ cảnh sang Page / Profile đích. |
+| **Đăng bài** | `post_reel(video_path, caption, ...)` | Đăng 1 video Reels trực tiếp (hỗ trợ hẹn giờ `scheduled_publish_time`). |
+| | `post_photos(image_paths, caption, ...)` | Đăng bài viết kèm 1 hoặc nhiều hình ảnh. |
+| | `stage_media_from_url(url, filename?)` | Tải video/ảnh từ internet về thư mục media của server. |
+| **Hàng đợi & Lịch sử** | `enqueue_job(kind, input_data, ...)` | Đẩy job đăng bài vào hàng đợi để dispatcher tự động xử lý. |
+| | `list_jobs(status?, limit?)` | Xem danh sách job trong hàng đợi (`queued`, `running`, `completed`, `failed`). |
+| | `cancel_job(job_id)` | Hủy 1 job đang chờ. |
+| | `retry_job(job_id)` | Chạy lại 1 job bị lỗi. |
+| | `get_history(limit?)` | Xem lịch sử các bài đã post, video ID và link bài viết. |
 
 ---
 
 ## 7. Các câu hỏi thường gặp & Xử lý sự cố
 
-#### Q1: Tại sao Extension báo trạng thái Disconnected (Mất kết nối)?
-> **Xử lý**: Đảm bảo bạn đã chạy lệnh `python -m fbem.bridge` ở terminal. Kiểm tra xem port `9224` có bị phần mềm diệt virus hoặc tường lửa chặn không.
+#### Q1: Tại sao Extension báo trạng thái Disconnected?
+> **Xử lý**: Đảm bảo server `python -m fbem.bridge` đang chạy. Kiểm tra cổng WebSocket `9224` (hoặc cấu hình WSS qua Cloudflare nếu chạy remote).
 
 #### Q2: Báo lỗi "No template captured for kind: reel"?
-> **Xử lý**: Hệ thống chưa có mẫu cấu trúc đăng bài. Hãy mở tab Facebook trên trình duyệt và tự tay đăng 1 video Reel thử nghiệm. Sau khi đăng xong, Extension sẽ tự ghi nhận mẫu và các lần sau sẽ tự động 100%.
-
-#### Q3: Làm sao để sửa giao diện Frontend hoặc build lại?
-> Thư mục `frontend/` chứa mã nguồn React + Vite.
-> ```bash
-> cd frontend
-> npm install
-> npm run build   # Build file tĩnh tự động vào fbem/bridge/static
-> ```
+> **Xử lý**: Hệ thống chưa có mẫu cấu trúc đăng bài. Hãy mở tab Facebook trên trình duyệt máy bạn và tự tay đăng 1 video Reel thử nghiệm. Sau khi đăng xong, Extension sẽ tự ghi nhận mẫu và các lần sau Agent sẽ tự động 100%.
 
 ---
 
-Chúc bạn có trải nghiệm tự động hóa tuyệt vời với FBEM! Nếu có thắc mắc, vui lòng tạo issue hoặc đóng góp qua pull request. 🚀
+Chúc bạn có trải nghiệm tự động hóa tuyệt vời với FBEM! 🚀
+

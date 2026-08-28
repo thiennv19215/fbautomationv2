@@ -31,7 +31,10 @@ from .config import captures_dir
 logger = logging.getLogger(__name__)
 
 _CAPTURES_DIR = captures_dir()
-_TEMPLATE_PATH = _CAPTURES_DIR / "template.json"
+
+
+def _root_template_path() -> Path:
+    return _CAPTURES_DIR / "template.json"
 
 # Live capture activity — proof the extension is attached to a logged-in
 # facebook.com tab and actively observing it (updates on every captured request,
@@ -210,9 +213,10 @@ def save_capture(payload: dict, extension_id: str | None = None) -> None:
                 elif v:
                     root_tpl[k] = v
             root_tpl["updatedAt"] = int(time.time())
-            root_tmp = _TEMPLATE_PATH.with_suffix(".json.tmp")
+            root_path = _root_template_path()
+            root_tmp = root_path.with_suffix(".json.tmp")
             root_tmp.write_text(json.dumps(root_tpl, indent=2, ensure_ascii=False), encoding="utf-8")
-            os.replace(root_tmp, _TEMPLATE_PATH)
+            os.replace(root_tmp, root_path)
         except Exception as exc:
             logger.debug("failed to mirror template to root: %s", exc)
 
@@ -245,11 +249,13 @@ def capture_stats(extension_id: str | None = None) -> dict:
 def load_template(extension_id: str | None = None) -> Optional[dict]:
     """Return the current template.json contents, checking scoped dir then falling back to root or other complete profiles."""
     paths_to_check: list[Path] = []
+    root_path = _root_template_path()
     if extension_id and extension_id.strip():
         safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", extension_id.strip())
         if safe_id:
             paths_to_check.append(_CAPTURES_DIR / safe_id / "template.json")
-    paths_to_check.append(_TEMPLATE_PATH)
+    else:
+        paths_to_check.append(root_path)
 
     # First pass: check direct paths
     for p in paths_to_check:
@@ -261,21 +267,21 @@ def load_template(extension_id: str | None = None) -> Optional[dict]:
             except (json.JSONDecodeError, OSError) as exc:
                 logger.warning("failed to read %s: %s", p, exc)
 
-    # Second pass: check any subdirectory that has a complete template
-    if _CAPTURES_DIR.exists():
+    # Second pass: check any subdirectory that has a complete template if extension_id is not given
+    if not extension_id and _CAPTURES_DIR.exists():
         sub_templates = sorted(_CAPTURES_DIR.glob("*/template.json"), key=lambda x: x.stat().st_mtime, reverse=True)
         for p in sub_templates:
             try:
-                data: Any = json.loads(p.read_text(encoding="utf-8"))
+                data = json.loads(p.read_text(encoding="utf-8"))
                 if isinstance(data, dict) and (template_complete(data) or bool(data.get("graphql_ops"))):
                     return data
             except (json.JSONDecodeError, OSError):
                 continue
 
-    # Fallback to whatever exists in root even if incomplete
-    if _TEMPLATE_PATH.exists():
+    # Fallback to whatever exists in root even if incomplete (only if no specific extension_id)
+    if not extension_id and root_path.exists():
         try:
-            data = json.loads(_TEMPLATE_PATH.read_text(encoding="utf-8"))
+            data = json.loads(root_path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
                 return data
         except Exception:

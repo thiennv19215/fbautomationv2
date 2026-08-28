@@ -1,0 +1,18 @@
+# Cloudflare Tunnel Configuration Example for FBEM
+# File location on VPS: ~/.cloudflared/config.yml
+
+tunnel: YOUR_TUNNEL_UUID
+credentials-file: /root/.cloudflared/YOUR_TUNNEL_UUID.json
+
+ingress:
+  # 1. Route WebSocket for Chrome Extension
+  - hostname: fbem.yourdomain.com
+    path: /ws
+    service: http://127.0.0.1:9224
+
+  # 2. Route REST API for AI Agents (MCP) and Extension Callbacks
+  - hostname: fbem.yourdomain.com
+    service: http://127.0.0.1:47102
+
+  # 3. Catch-all rule (Required)
+  - service: http_status:404

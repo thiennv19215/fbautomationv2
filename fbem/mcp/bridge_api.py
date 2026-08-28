@@ -141,3 +141,65 @@ async def switch_profile(target_id: str, extension_id: str | None = None) -> dic
 async def current_identity(extension_id: str | None = None) -> dict:
     query = f"?extension_id={quote(extension_id)}" if extension_id else ""
     return await _get(f"/api/current-identity{query}", timeout=20.0)
+
+
+async def list_pages(extension_id: str | None = None) -> dict:
+    query = f"?extension_id={quote(extension_id)}" if extension_id else ""
+    return await _get(f"/api/pages{query}", timeout=10.0)
+
+
+async def list_accounts(extension_id: str | None = None) -> list[dict]:
+    query = f"?extension_id={quote(extension_id)}" if extension_id else ""
+    res = await _get(f"/api/accounts{query}", timeout=10.0)
+    return res.get("accounts", []) if isinstance(res, dict) else res
+
+
+async def save_account(account_data: dict) -> dict:
+    return await _post("/api/accounts", account_data, timeout=10.0)
+
+
+async def delete_account(account_id: str) -> dict:
+    try:
+        async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
+            resp = await client.delete(f"{base_url()}/api/accounts/{quote(account_id)}")
+    except httpx.HTTPError as exc:
+        raise BridgeError(f"bridge unreachable at {base_url()} ({exc})") from exc
+    if resp.status_code >= 400:
+        raise BridgeError(f"DELETE /api/accounts/{account_id} -> {resp.status_code}: {_detail(resp)}")
+    return resp.json()
+
+
+async def list_jobs(status: str | None = None, limit: int = 50) -> list[dict]:
+    query = f"?limit={limit}"
+    if status:
+        query += f"&status={quote(status)}"
+    res = await _get(f"/api/jobs{query}", timeout=10.0)
+    return res.get("jobs", []) if isinstance(res, dict) else res
+
+
+async def enqueue_job(job_data: dict) -> dict:
+    return await _post("/api/jobs", job_data, timeout=10.0)
+
+
+async def cancel_job(job_id: str) -> dict:
+    return await _post(f"/api/jobs/{quote(job_id)}/cancel", {}, timeout=10.0)
+
+
+async def retry_job(job_id: str) -> dict:
+    return await _post(f"/api/jobs/{quote(job_id)}/retry", {}, timeout=10.0)
+
+
+async def get_stats() -> dict:
+    return await _get("/api/stats", timeout=10.0)
+
+
+async def get_history(limit: int = 50) -> dict:
+    return await _get(f"/api/history?limit={limit}", timeout=10.0)
+
+
+async def stage_media_url(url: str, filename: str | None = None) -> dict:
+    body: dict = {"url": url}
+    if filename:
+        body["filename"] = filename
+    return await _post("/api/stage-media-url", body, timeout=60.0)
+
