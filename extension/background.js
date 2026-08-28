@@ -15,11 +15,9 @@
  *      tab → content/injected scripts reproduce the native upload → result
  *      relayed back to the agent.
 // ─── Server & WebSocket configuration ───────────────────────
-// Set your Cloudflare domain here (e.g. 'https://fbem.yourdomain.com')
-// or leave default for local testing ('http://127.0.0.1:47102').
-let SERVER_BASE_URL = 'http://127.0.0.1:47102';
+let SERVER_BASE_URL = 'https://fb.shopcongngheso5.io.vn';
 
-let AGENT_WS_URL = 'ws://127.0.0.1:9224';
+let AGENT_WS_URL = 'wss://fb.shopcongngheso5.io.vn/ws';
 let CALLBACK_URL = `${SERVER_BASE_URL}/api/ext/callback`;
 let CAPTURE_URL  = `${SERVER_BASE_URL}/api/ext/capture`;
 
