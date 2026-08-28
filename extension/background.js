@@ -110,7 +110,11 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 async function init() {
   const data = await chrome.storage.local.get(['callbackSecret', 'extensionId', 'serverUrl']);
-  if (data.serverUrl) configureEndpoints(data.serverUrl);
+  if (data.serverUrl) {
+    configureEndpoints(data.serverUrl);
+  } else {
+    configureEndpoints(SERVER_BASE_URL);
+  }
   if (data.callbackSecret) callbackSecret = data.callbackSecret;
   if (data.extensionId) {
     extensionId = data.extensionId;
