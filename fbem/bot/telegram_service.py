@@ -547,6 +547,29 @@ def _extract_schedule(caption: str) -> tuple[str, Optional[int]]:
     return caption, None
 
 
+def _is_authorized(chat_id: str, from_user_id: str | None = None) -> bool:
+    """Check if the sender/chat is authorized to control the bot."""
+    cfg = get_config()
+    admin_cid = str(cfg.get("chatId") or "").strip()
+    cid = str(chat_id).strip()
+    uid = str(from_user_id or "").strip()
+
+    # If no admin chatId is configured yet, allow initial configuration
+    if not admin_cid:
+        return True
+
+    # Check if sender is admin
+    if cid == admin_cid or (uid and uid == admin_cid):
+        return True
+
+    # Check if group is registered and active
+    groups = get_groups_config()
+    if cid in groups:
+        return True
+
+    return False
+
+
 async def _handle_update(token: str, update: dict):
     try:
         # 1. Handle Callback Query (Inline button click)
@@ -562,6 +585,12 @@ async def _handle_update(token: str, update: dict):
                     await client.post(f"https://api.telegram.org/bot{token}/answerCallbackQuery", json={"callback_query_id": cq_id})
             except Exception:
                 pass
+
+            if not _is_authorized(chat_id, str(from_user)):
+                logger.warning("Unauthorized callback query from %s (data=%s)", from_user, data)
+                await send_message("⛔ <b>Bạn không có quyền thao tác trên hệ thống này!</b>", chat_id=chat_id)
+                return
+
 
             if data.startswith("g:"):
                 # format: g:<action>:<chat_id>[:extra]
@@ -664,9 +693,22 @@ async def _handle_update(token: str, update: dict):
             return
 
         chat_id = str(msg.get("chat", {}).get("id"))
+        from_user = msg.get("from", {})
+        from_user_id = str(from_user.get("id") or "")
         text = (msg.get("text") or "").strip()
         caption = (msg.get("caption") or "").strip()
         lower_text = text.lower()
+
+        # Check authorization: only configured admin or registered group
+        if not _is_authorized(chat_id, from_user_id):
+            logger.warning("Unauthorized message from chat_id=%s, from_user_id=%s", chat_id, from_user_id)
+            if msg.get("chat", {}).get("type", "private") == "private":
+                await send_message(
+                    f"⛔ <b>TRUY CẬP BỊ TỪ CHỐI</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+                    f"Tài khoản của bạn (ID: <code>{from_user_id or chat_id}</code>) chưa được cấu hình làm Quản trị viên điều khiển FBEM.",
+                    chat_id=chat_id,
+                )
+            return
 
         # Track Group Chat Activity
         chat_type = msg.get("chat", {}).get("type", "private")

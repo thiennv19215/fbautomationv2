@@ -33,11 +33,39 @@ class TestQueueAndApi(unittest.TestCase):
         account = res.json()["account"]
         self.assertEqual(account["name"], "Fanpage Test")
 
+        # Popup account management can update the display details and disable a
+        # Page without losing its stable extension/Page association.
+        res = self.client.put(f"/api/accounts/{account['id']}", json={
+            "name": "Fanpage Updated",
+            "facebookId": "1000123456",
+            "extensionId": "ext-test-1",
+            "accountType": "page",
+            "notes": "Managed from popup",
+            "enabled": False,
+        })
+        self.assertEqual(res.status_code, 200)
+        updated = res.json()["account"]
+        self.assertEqual(updated["name"], "Fanpage Updated")
+        self.assertEqual(updated["notes"], "Managed from popup")
+        self.assertFalse(updated["enabled"])
+
+        # Re-enable before queue creation because the dispatcher only accepts
+        # enabled accounts.
+        res = self.client.put(f"/api/accounts/{account['id']}", json={
+            "name": "Fanpage Updated",
+            "facebookId": "1000123456",
+            "extensionId": "ext-test-1",
+            "accountType": "page",
+            "notes": "Managed from popup",
+            "enabled": True,
+        })
+        self.assertEqual(res.status_code, 200)
+
         # List Accounts
         res = self.client.get("/api/accounts")
         self.assertEqual(res.status_code, 200)
         items = res.json()["items"]
-        self.assertEqual(len(items), 1)
+        self.assertTrue(any(item["id"] == account["id"] for item in items))
 
         # Create Job with Idempotency Key
         idemp_key = "test_video_hash_999"
@@ -78,10 +106,44 @@ class TestQueueAndApi(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertTrue(res.json()["ok"])
 
+        # A popup-created scheduled job retains the selected extension, media input,
+        # and explicit Unix-second run time for the dispatcher.
+        run_at = 2_000_000_000
+        res = self.client.post("/api/jobs", json={
+            "accountId": account["id"],
+            "extensionId": "ext-test-1",
+            "kind": "post_photos",
+            "input": {
+                "imageUrls": ["http://127.0.0.1:47102/local-image?name=cover.jpg"],
+                "caption": "Scheduled album",
+            },
+            "runAt": run_at,
+            "idempotencyKey": "popup-scheduled-album",
+        })
+        self.assertEqual(res.status_code, 200)
+        scheduled = res.json()["job"]
+        self.assertEqual(scheduled["extension_id"], "ext-test-1")
+        self.assertEqual(scheduled["run_at"], run_at)
+        self.assertEqual(scheduled["input"]["caption"], "Scheduled album")
+
+        # A Page cannot be deleted while queued work still references it.
+        res = self.client.delete(f"/api/accounts/{account['id']}")
+        self.assertEqual(res.status_code, 409)
+        self.assertEqual(res.json()["detail"], "account_has_active_jobs")
+
+        # Clear the active jobs, then the Page can be deleted cleanly.
+        for job_id in (job1["id"], scheduled["id"]):
+            self.client.post(f"/api/jobs/{job_id}/cancel")
+        res = self.client.delete(f"/api/accounts/{account['id']}")
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.json()["ok"])
+        remaining_accounts = self.client.get("/api/accounts").json()["items"]
+        self.assertFalse(any(item["id"] == account["id"] for item in remaining_accounts))
+
         # Stats
         res = self.client.get("/api/stats")
         self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.json()["accounts"], 1)
+        self.assertEqual(res.json()["accounts"], 0)
 
 
 if __name__ == "__main__":

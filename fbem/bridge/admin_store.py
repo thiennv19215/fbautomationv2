@@ -175,7 +175,7 @@ def get_row(table: str, item_id: str) -> dict | None:
 
 def save_account(data: dict, item_id: str | None = None) -> dict:
     now = int(time.time())
-    item_id = item_id or str(uuid.uuid4())
+    item_id = item_id or data.get("id") or str(uuid.uuid4())
     name = str(data.get("name", "")).strip()
     facebook_id = str(data.get("facebookId") or data.get("facebook_id") or "").strip()
     extension_id = str(data.get("extensionId") or data.get("extension_id") or "").strip()

@@ -61,6 +61,13 @@ logs/
 .env
 .env.local
 .env.*.local
+telegram_config.json
+telegram_config.*.json
+telegram.json
+telegram_groups.json
+*.pem
+*.key
+
 
 # IDE & OS
 .DS_Store

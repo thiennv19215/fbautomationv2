@@ -116,16 +116,16 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="fbem-bridge", version="0.1.0", lifespan=lifespan)
 
-# The crawler/replay run inside facebook.com page context, so their POSTs to the
-# loopback sink are cross-origin and trigger a CORS preflight (OPTIONS). The
-# server is loopback-only and every mutating route is secret-gated, so reflecting
-# any origin is safe here and lets the preflight succeed.
+# Restrict CORS to local host, Facebook domains, Chrome extensions, and configured server domains
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=".*",
+    allow_origin_regex=r"^https?://(127\.0\.0\.1|localhost)(:\d+)?$|^https?://([a-zA-Z0-9.-]+\.)?facebook\.com$|^https?://([a-zA-Z0-9.-]+\.)?shopcongngheso5\.io\.vn$|^chrome-extension://.*$",
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
 
 @app.get("/", tags=["status"])
 def root_status():
@@ -516,8 +516,11 @@ def update_account(account_id: str, body: AccountBody) -> dict:
 
 @app.delete("/api/accounts/{account_id}")
 def delete_account(account_id: str) -> dict:
-    """Delete an account."""
-    admin_store.delete_account(account_id)
+    """Delete an account only when it has no active work."""
+    deleted, error = admin_store.delete_account(account_id)
+    if not deleted:
+        status = 409 if error == "account_has_active_jobs" else 404
+        raise HTTPException(status_code=status, detail=error or "account_delete_failed")
     return {"ok": True}
 
 

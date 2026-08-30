@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FBEM Control Center</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main class="popup-shell">
+    <header class="header">
+      <div>
+        <p class="eyebrow">FBEM</p>
+        <h1>Đăng bài &amp; Hàng đợi</h1>
+      </div>
+      <button id="refresh-button" class="icon-button" type="button" title="Làm mới dữ liệu" aria-label="Làm mới dữ liệu">↻</button>
+    </header>
+
+    <section class="status-card" aria-live="polite">
+      <div class="status-line">
+        <span id="connection-dot" class="status-dot is-muted"></span>
+        <strong id="connection-text">Đang kiểm tra kết nối…</strong>
+      </div>
+      <p id="identity-text" class="subtle">Chưa xác định Fanpage đang hoạt động.</p>
+      <div class="readiness-grid">
+        <span id="reel-readiness" class="badge is-muted">Reel: đang kiểm tra</span>
+        <span id="photo-readiness" class="badge is-muted">Ảnh: đang kiểm tra</span>
+      </div>
+    </section>
+
+    <div id="notice" class="notice" hidden role="status"></div>
+
+    <details class="account-manager" id="account-manager">
+      <summary>
+        <span>Quản lý Fanpage</span>
+        <span id="managed-account-count" class="subtle"></span>
+      </summary>
+      <div class="account-manager-body">
+        <div class="account-toolbar">
+          <button id="new-account-button" class="queue-action" type="button">+ Thêm Fanpage</button>
+          <button id="prefill-identity-button" class="queue-action" type="button">Lấy Page đang hoạt động</button>
+        </div>
+
+        <form id="account-form" class="account-form" hidden>
+          <input id="account-id-input" type="hidden">
+          <label for="account-name-input">Tên Fanpage</label>
+          <input id="account-name-input" type="text" maxlength="160" placeholder="Ví dụ: Cửa hàng ABC" required>
+          <label for="account-facebook-id-input">Facebook Page ID</label>
+          <input id="account-facebook-id-input" type="text" inputmode="numeric" maxlength="64" placeholder="ID số của Fanpage" required>
+          <label for="account-extension-select">Chrome profile / extension</label>
+          <select id="account-extension-select"></select>
+          <label for="account-notes-input">Ghi chú <span class="subtle">(không bắt buộc)</span></label>
+          <textarea id="account-notes-input" rows="2" placeholder="Ghi chú nội bộ…"></textarea>
+          <label class="checkbox-label" for="account-enabled-input">
+            <input id="account-enabled-input" type="checkbox" checked>
+            Cho phép dùng Page này để đăng bài
+          </label>
+          <div class="account-form-actions">
+            <button id="account-cancel-button" class="queue-action" type="button">Hủy</button>
+            <button id="account-save-button" class="primary-button compact" type="submit">Lưu Fanpage</button>
+          </div>
+        </form>
+
+        <div id="managed-account-list" class="managed-account-list">
+          <p class="empty-state">Đang tải Fanpage…</p>
+        </div>
+      </div>
+    </details>
+
+    <section class="composer-card">
+      <div class="section-heading">
+        <h2>Tạo bài đăng</h2>
+        <label class="type-select-label" for="post-kind">Loại</label>
+        <select id="post-kind">
+          <option value="post_reel">Reel</option>
+          <option value="post_photos">Ảnh / Album</option>
+        </select>
+      </div>
+
+      <label for="account-select">Fanpage đích</label>
+      <select id="account-select" required>
+        <option value="">Đang tải danh sách Fanpage…</option>
+      </select>
+      <p id="account-help" class="field-help">Hàng đợi cần Fanpage đã được lưu trong FBEM.</p>
+
+      <label for="media-input">Tệp media</label>
+      <input id="media-input" type="file" accept="video/mp4,video/quicktime" required>
+      <p id="media-help" class="field-help">Chọn 1 video .mp4 hoặc .mov cho Reel.</p>
+
+      <label for="caption-input">Nội dung</label>
+      <textarea id="caption-input" rows="4" placeholder="Viết nội dung bài đăng…"></textarea>
+
+      <div class="schedule-row">
+        <label class="checkbox-label" for="queue-toggle">
+          <input id="queue-toggle" type="checkbox">
+          Đưa vào hàng đợi
+        </label>
+        <input id="schedule-input" type="datetime-local" aria-label="Thời gian chạy hàng đợi" disabled>
+      </div>
+      <p id="schedule-help" class="field-help">Tắt để đăng ngay. Bật để chọn thời gian chạy từ hàng đợi.</p>
+
+      <button id="submit-button" class="primary-button" type="button">Đăng ngay</button>
+    </section>
+
+    <section class="queue-card">
+      <div class="section-heading">
+        <h2>Hàng đợi gần đây</h2>
+        <span id="queue-count" class="subtle"></span>
+      </div>
+      <div id="queue-list" class="queue-list">
+        <p class="empty-state">Đang tải hàng đợi…</p>
+      </div>
+    </section>
+
+    <footer>
+      Chỉ hỗ trợ đăng Reel/ảnh và hàng đợi. Bình luận, cảm xúc và chia sẻ chưa được hỗ trợ.
+    </footer>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -28,6 +28,31 @@ Two phases:
 3. **Load unpacked** → select this `extension/` directory.
 4. The service worker connects to the bridge automatically.
 
+## Popup: đăng bài & hàng đợi
+
+Nhấn biểu tượng **FBEM** trên thanh công cụ Chrome để mở **Chrome Side Panel**.
+Thanh bên này có thể ghim và kéo rộng/hẹp trong khi bạn làm việc trên Facebook;
+nó dùng cùng URL server đã được extension cấu hình và cung cấp:
+
+- kiểm tra kết nối bridge, Fanpage đang hoạt động, và mức sẵn sàng capture cho
+  Reel/Ảnh;
+- chọn một tệp `.mp4`/`.mov` để đăng Reel, hoặc một/nhiều tệp
+  `.jpg`/`.jpeg`/`.png` để đăng ảnh/album;
+- đăng ngay, hoặc upload media rồi tạo tác vụ theo thời gian trong hàng đợi;
+- xem các tác vụ gần đây và hủy tác vụ đang chờ / thử lại tác vụ lỗi.
+
+Mở mục **Quản lý Fanpage** trong popup để thêm, sửa, bật/tắt hoặc xóa Page mà
+không cần rời Chrome. Mỗi Page phải có tên, Facebook Page ID và được gán đúng
+Chrome extension/profile. Nút **Lấy Page đang hoạt động** đọc Page hiện đang
+được tab Facebook sử dụng để điền sẵn biểu mẫu; bạn vẫn phải kiểm tra và bấm
+Lưu. Page có tác vụ đang chờ/đang chạy không thể bị xóa cho đến khi các tác vụ
+đó được hủy hoặc hoàn tất.
+
+Để tạo tác vụ hàng đợi, cần chọn một Fanpage đang bật và đã được lưu trong
+FBEM. Cả đăng ngay và hàng đợi đều yêu cầu bạn đã capture tay ít nhất một bài
+cùng loại trên Facebook. Popup hiện **không** hỗ trợ bình luận, thả cảm xúc hoặc
+chia sẻ bài viết.
+
 ## Keep a logged-in facebook.com tab open
 
 Replay runs **inside a facebook.com page**, so a tab logged into the target

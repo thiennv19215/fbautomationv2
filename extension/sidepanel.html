@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FBEM Control Center</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="app-header">
+      <div class="brand"><span class="brand-mark">F</span><div><p>FBEM CONTROL CENTER</p><h1>Facebook Workspace</h1></div></div>
+      <button id="refresh-button" class="icon-button" type="button" title="Làm mới dữ liệu" aria-label="Làm mới dữ liệu">↻</button>
+    </header>
+
+    <section class="connection-strip" aria-live="polite">
+      <div class="connection-state"><span id="connection-dot" class="status-dot"></span><strong id="connection-text">Đang kiểm tra kết nối…</strong></div>
+      <p id="identity-text">Chưa xác định Fanpage đang hoạt động.</p>
+      <div class="readiness-grid"><span id="reel-readiness" class="badge">Reel: đang kiểm tra</span><span id="photo-readiness" class="badge">Ảnh: đang kiểm tra</span></div>
+    </section>
+
+    <div id="notice" class="notice" hidden role="status"></div>
+
+    <nav class="tab-bar" aria-label="Điều hướng workspace">
+      <button class="tab-button is-active" type="button" role="tab" aria-selected="true" data-panel="composer-panel">Đăng bài</button>
+      <button class="tab-button" type="button" role="tab" aria-selected="false" data-panel="queue-panel">Hàng đợi <span id="queue-count" class="tab-count"></span></button>
+      <button class="tab-button" type="button" role="tab" aria-selected="false" data-panel="accounts-panel">Fanpage <span id="managed-account-count" class="tab-count"></span></button>
+    </nav>
+
+    <section id="composer-panel" class="workspace-panel is-active" role="tabpanel">
+      <div class="panel-heading"><div><p class="eyebrow">COMPOSER</p><h2>Tạo bài đăng</h2></div><span id="composer-readiness" class="badge">Đang kiểm tra</span></div>
+      <div class="form-grid two-columns">
+        <label>Fanpage đích<select id="account-select" required><option value="">Đang tải Fanpage…</option></select></label>
+        <label>Loại bài<select id="post-kind"><option value="post_reel">Reel</option><option value="post_photos">Ảnh / Album</option></select></label>
+      </div>
+      <p id="account-help" class="field-help"></p>
+      <label class="field-block" for="media-input">Tệp media<input id="media-input" type="file" accept="video/mp4,video/quicktime" required></label>
+      <p id="media-help" class="field-help">Chọn 1 video .mp4 hoặc .mov cho Reel.</p>
+      <label class="field-block" for="caption-input">Nội dung<textarea id="caption-input" rows="6" placeholder="Viết nội dung bài đăng…"></textarea></label>
+      <div class="schedule-card"><label class="checkbox-label" for="queue-toggle"><input id="queue-toggle" type="checkbox">Lên lịch trong hàng đợi</label><input id="schedule-input" type="datetime-local" aria-label="Thời gian chạy hàng đợi" disabled></div>
+      <p id="schedule-help" class="field-help"></p>
+      <button id="submit-button" class="primary-button" type="button">Đăng ngay</button>
+    </section>
+
+    <section id="queue-panel" class="workspace-panel" role="tabpanel" hidden>
+      <div class="panel-heading"><div><p class="eyebrow">DISPATCHER</p><h2>Hàng đợi bài đăng</h2></div><button id="queue-refresh-button" class="secondary-button" type="button">Làm mới</button></div>
+      <p class="field-help">Theo dõi lịch chạy, lỗi và thao tác với từng tác vụ.</p>
+      <div id="queue-list" class="queue-list"><p class="empty-state">Đang tải hàng đợi…</p></div>
+    </section>
+
+    <section id="accounts-panel" class="workspace-panel" role="tabpanel" hidden>
+      <div class="panel-heading"><div><p class="eyebrow">PAGE DIRECTORY</p><h2>Quản lý Fanpage</h2></div><button id="new-account-button" class="primary-button compact" type="button">+ Thêm Page</button></div>
+      <div class="page-tools"><button id="prefill-identity-button" class="secondary-button" type="button">Lấy Page đang hoạt động</button><span class="field-help">Đọc Page từ tab Facebook hiện tại để điền sẵn.</span></div>
+      <form id="account-form" class="account-form" hidden>
+        <input id="account-id-input" type="hidden">
+        <div class="form-grid two-columns"><label>Tên Fanpage<input id="account-name-input" type="text" maxlength="160" placeholder="Ví dụ: Cửa hàng ABC" required></label><label>Facebook Page ID<input id="account-facebook-id-input" type="text" inputmode="numeric" maxlength="64" placeholder="ID số của Fanpage" required></label></div>
+        <label>Chrome profile / extension<select id="account-extension-select"></select></label>
+        <label>Ghi chú <span class="muted">(không bắt buộc)</span><textarea id="account-notes-input" rows="3" placeholder="Ghi chú nội bộ…"></textarea></label>
+        <label class="checkbox-label" for="account-enabled-input"><input id="account-enabled-input" type="checkbox" checked>Cho phép dùng Page này để đăng bài</label>
+        <div class="form-actions"><button id="account-cancel-button" class="secondary-button" type="button">Hủy</button><button id="account-save-button" class="primary-button compact" type="submit">Lưu Fanpage</button></div>
+      </form>
+      <div id="managed-account-list" class="managed-account-list"><p class="empty-state">Đang tải Fanpage…</p></div>
+    </section>
+  </main>
+  <script src="sidepanel.js"></script>
+</body>
+</html>

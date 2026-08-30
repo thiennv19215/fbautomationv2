@@ -43,7 +43,7 @@ let callbackSecret   = null; // Auth secret received from agent on WS connect
 let manualDisconnect = false;
 let postInFlight     = 0;    // active post/switch count; pauses the periodic tab reload
 
-let extensionId      = 'ext-' + Math.random().toString(36).slice(2, 11); // Fallback ID until loaded from storage
+let extensionId      = null; // Created once and persisted in chrome.storage.local during startup
 
 // ─── Facebook tab matchers ──────────────────────────────────
 
@@ -96,8 +96,24 @@ async function findFbTab(attempts = 3, delayMs = 1500) {
 
 // ─── Startup ────────────────────────────────────────────────
 
-chrome.runtime.onInstalled.addListener(init);
-chrome.runtime.onStartup.addListener(init);
+function configureSidePanel() {
+  // The toolbar icon opens the persistent Side Panel instead of a constrained popup.
+  if (chrome.sidePanel?.setPanelBehavior) {
+    chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((e) => {
+      console.warn('[FBBridge] Side Panel setup failed:', e?.message || e);
+    });
+  }
+}
+
+chrome.runtime.onInstalled.addListener(() => {
+  init();
+  configureSidePanel();
+});
+chrome.runtime.onStartup.addListener(() => {
+  init();
+  configureSidePanel();
+});
+configureSidePanel();
 
 // Auto-reload the FB tab every TTL so its session/tokens + capture templates
 // stay fresh (FB rotates volatile tokens; a long-idle tab goes stale). The bridge
@@ -703,6 +719,26 @@ async function handleGetIdentity(msg) {
 
 chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
   if (!msg || !msg.type) return;
+
+  // Popup asks the service worker directly instead of inferring WebSocket state
+  // solely from the HTTP health endpoint. This remains accurate if a deployed
+  // server reports stale health while this extension's WebSocket is open.
+  if (msg.type === 'get_popup_status') {
+    (async () => {
+      const data = await chrome.storage.local.get(['serverUrl']);
+      if (data.serverUrl) configureEndpoints(data.serverUrl);
+      const extId = await getOrCreateExtensionId();
+      if (!ws || ws.readyState === WebSocket.CLOSED) connectToAgent();
+      reply?.({
+        ok: true,
+        extensionId: extId,
+        serverUrl: SERVER_BASE_URL,
+        connected: ws?.readyState === WebSocket.OPEN,
+        connecting: ws?.readyState === WebSocket.CONNECTING,
+      });
+    })().catch((e) => reply?.({ ok: false, error: e?.message || String(e) }));
+    return true;
+  }
 
   // Crawler snapshot of a genuine native request → push to capture sink.
   if (msg.type === 'capture') {
